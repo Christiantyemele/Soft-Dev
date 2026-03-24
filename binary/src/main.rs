@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     store.set(KEY_WORKER_SLOTS, serde_json::to_value(worker_slots)?).await;
 
     // 4. Build Flow
-    let nexus = Arc::new(NexusNode::new(".agent/registry.json"));
+    let nexus = Arc::new(NexusNode::new(".agent/agents/nexus.agent.md"));
     let forge = Arc::new(ForgeNode::new("."));
 
     let flow = Flow::new("nexus")

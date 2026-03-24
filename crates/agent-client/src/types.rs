@@ -1,7 +1,8 @@
-// crates/agent-client/src/types.rs
 //
 // Core types shared across all agent-client modules.
 
+use anyhow::Result;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -111,4 +112,31 @@ pub struct AgentDecision {
     pub action: String,
     /// Human-readable notes for logging or downstream agents (e.g. SENTINEL context).
     pub notes:  String,
+}
+
+// ── LLM Client Trait ──────────────────────────────────────────────────────
+
+#[async_trait]
+pub trait LlmClient: Send + Sync {
+    /// Send messages to the API. Returns exactly one `LlmResponse`.
+    async fn send(
+        &self,
+        messages: &[Message],
+        tools:    &[ToolSchema],
+    ) -> Result<LlmResponse>;
+
+    /// Return the model name (for logging).
+    fn model(&self) -> &str;
+}
+
+/// Parsed output of a single Messages API call.
+pub enum LlmResponse {
+    /// The model wants to call a tool.
+    ToolCall {
+        id:   String,
+        name: String,
+        args: Value,
+    },
+    /// The model is done and returned a text response (final decision).
+    Text(String),
 }

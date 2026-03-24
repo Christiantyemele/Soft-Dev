@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::debug;
 
-use crate::types::{ContentBlock, Message, ToolSchema};
+use crate::types::{ContentBlock, Message, ToolSchema, LlmClient, LlmResponse};
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -54,19 +54,6 @@ impl AnthropicClient {
     }
 }
 
-// ── Response types ────────────────────────────────────────────────────────
-
-/// Parsed output of a single Messages API call.
-pub enum LlmResponse {
-    /// The model wants to call a tool.
-    ToolCall {
-        id:   String,
-        name: String,
-        args: Value,
-    },
-    /// The model is done and returned a text response (final decision).
-    Text(String),
-}
 
 // ── Serialization helpers ─────────────────────────────────────────────────
 
@@ -113,9 +100,10 @@ fn messages_to_json(messages: &[Message]) -> Value {
 
 // ── Main API call ─────────────────────────────────────────────────────────
 
-impl AnthropicClient {
+#[async_trait::async_trait]
+impl LlmClient for AnthropicClient {
     /// Send messages to the API. Returns exactly one `LlmResponse`.
-    pub async fn send(
+    async fn send(
         &self,
         messages: &[Message],
         tools:    &[ToolSchema],
@@ -172,5 +160,9 @@ impl AnthropicClient {
             )),
             other => bail!("Unknown Anthropic content block type: {:?}", other),
         }
+    }
+
+    fn model(&self) -> &str {
+        &self.model
     }
 }

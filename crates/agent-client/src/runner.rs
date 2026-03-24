@@ -5,33 +5,44 @@
 // Ties together AnthropicClient and McpSession into a single
 // `run()` method that drives an agent to completion.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::{
-    anthropic::{AnthropicClient, LlmResponse},
+    anthropic::AnthropicClient,
+    openai::OpenAiClient,
     mcp::McpSession,
-    types::{AgentDecision, AgentPersona, Message},
+    types::{AgentDecision, AgentPersona, Message, LlmClient, LlmResponse},
 };
 
 // ── AgentRunner ───────────────────────────────────────────────────────────
 
 pub struct AgentRunner {
-    client: AnthropicClient,
+    client: Box<dyn LlmClient>,
     mcp:    McpSession,
 }
 
 impl AgentRunner {
-    pub fn new(client: AnthropicClient, mcp: McpSession) -> Self {
+    pub fn new(client: Box<dyn LlmClient>, mcp: McpSession) -> Self {
         Self { client, mcp }
     }
 
-    /// Create a runner using environment variables (ANTHROPIC_API_KEY, ANTHROPIC_MODEL)
-    /// and the default Docker-based GitHub MCP server.
+    /// Create a runner using environment variables.
+    /// Detects provider via LLM_PROVIDER (defaults to anthropic).
     pub async fn from_env() -> Result<Self> {
-        let client = AnthropicClient::from_env()?;
-        let mcp    = McpSession::connect_default().await?;
+        let provider = std::env::var("LLM_PROVIDER")
+            .unwrap_or_else(|_| "anthropic".to_string());
+        
+        let client: Box<dyn LlmClient> = match provider.as_str() {
+            "openai"    => Box::new(OpenAiClient::from_env()?),
+            "anthropic" => Box::new(AnthropicClient::from_env()?),
+            other => bail!("Unknown LLM_PROVIDER: {}", other),
+        };
+        
+        info!(provider = %provider, model = %client.model(), "AgentRunner initialized from env");
+        
+        let mcp = McpSession::connect_default().await?;
         Ok(Self::new(client, mcp))
     }
 
@@ -57,7 +68,10 @@ impl AgentRunner {
         // 2. Seed the conversation
         let mut messages = vec![
             Message::system(format!(
-                "{}\n\nYou MUST end your response with a JSON object on its own line: \
+                "{}\n\nYou are an autonomous orchestrator. \
+                 If the provided context is empty or sparse, use your tools (like `list_issues` or `search_issues`) \
+                 to fetch the current state of the repository before making a final decision. \
+                 \n\nYou MUST end your final response with a JSON object on its own line: \
                  {{\"action\": \"<action>\", \"notes\": \"<notes>\"}}",
                 persona.system_prompt()
             )),
@@ -76,7 +90,7 @@ impl AgentRunner {
                     let result = match self.mcp.call_tool(&name, args.clone()).await {
                         Ok(r)  => {
                             let text = r.as_text();
-                            info!(agent = persona.id, tool = name, result_len = text.len(), "Tool execution successful");
+                            info!(agent = persona.id, tool = name, result = text, "Tool execution successful");
                             text
                         },
                         Err(e) => {
