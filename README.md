@@ -24,3 +24,4 @@ The team's "constitution" is located in the `.agent/` directory:
 
 ## 🚀 Getting Started
 Check the `FINAL_DESIGN.md` in the development brain for the full technical specification.
+<img width="1068" height="378" alt="image" src="https://github.com/user-attachments/assets/d37c29d5-4465-43fe-ac6b-c257fd8413a4" />
