@@ -66,15 +66,19 @@ impl AgentRunner {
 
         // 3. Tool-calling loop
         for turn in 0..max_turns {
-            debug!(agent = persona.id, turn, "LLM turn");
+            info!(agent = persona.id, turn, "--- LLM Turn Starting ---");
 
             match self.client.send(&messages, &tools).await? {
                 LlmResponse::ToolCall { id, name, args } => {
-                    info!(agent = persona.id, tool = name, "Executing tool");
+                    info!(agent = persona.id, tool = name, args = ?args, "LLM requested tool execution");
 
                     // Execute the tool via MCP
                     let result = match self.mcp.call_tool(&name, args.clone()).await {
-                        Ok(r)  => r.as_text(),
+                        Ok(r)  => {
+                            let text = r.as_text();
+                            info!(agent = persona.id, tool = name, result_len = text.len(), "Tool execution successful");
+                            text
+                        },
                         Err(e) => {
                             warn!(agent = persona.id, tool = name, err = %e, "Tool call failed");
                             format!("ERROR: {}", e)
@@ -87,11 +91,12 @@ impl AgentRunner {
                 }
 
                 LlmResponse::Text(text) => {
-                    info!(agent = persona.id, turn, "Agent reached decision");
-                    debug!(decision = text, "Raw decision text");
+                    info!(agent = persona.id, "--- Agent reached final decision ---");
+                    debug!(decision = text, "Raw decision text from LLM");
 
                     // Extract the JSON decision from the last line of the response
                     let decision = extract_decision(&text)?;
+                    info!(action = decision.action, notes = decision.notes, "Parsed decision");
                     return Ok(decision);
                 }
             }

@@ -18,8 +18,6 @@ impl NexusNode {
 
     async fn load_persona(&self) -> Result<AgentPersona> {
         let content = tokio::fs::read_to_string(&self.persona_path).await?;
-        // For now, we assume the persona file context is the system prompt.
-        // In a more robust version, we'd parse the frontmatter.
         Ok(AgentPersona {
             id: "nexus".to_string(),
             role: "orchestrator".to_string(),
@@ -38,12 +36,14 @@ impl Node for NexusNode {
         let worker_slots = store.get("worker_slots").await.unwrap_or(json!({}));
         let open_prs = store.get("open_prs").await.unwrap_or(json!([]));
         let command_gate = store.get("command_gate").await.unwrap_or(json!({}));
+        let repository = store.get("repository").await.unwrap_or(json!(""));
 
         Ok(json!({
             "tickets": tickets,
             "worker_slots": worker_slots,
             "open_prs": open_prs,
             "command_gate": command_gate,
+            "repository": repository,
         }))
     }
 
@@ -64,12 +64,6 @@ impl Node for NexusNode {
         
         info!(action = decision.action, notes = decision.notes, "Nexus decision reached");
         
-        // Here we could parse specific decisions to update the store 
-        // (e.g. if the LLM called a tool to assign a ticket, the tool result 
-        // would have been updated in the loop, but we might want to sync back 
-        // internal structures if they aren't fully MCP-driven yet).
-        
-        // For now, we trust the LLM's returned Action string.
         Ok(Action::new(decision.action))
     }
 }
