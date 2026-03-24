@@ -49,6 +49,8 @@ async fn test_nexus_e2e_mocked() -> Result<()> {
     // 2. Setup environment variables for AgentRunner
     std::env::set_var("ANTHROPIC_API_KEY", "test-key");
     std::env::set_var("ANTHROPIC_API_URL", &url);
+    std::env::set_var("GITHUB_MCP_CMD", "python3 ../scripts/mock_mcp.py");
+    std::env::set_var("GITHUB_PERSONAL_ACCESS_TOKEN", "test-token");
 
     // 3. Initialize SharedStore
     let store = SharedStore::new_in_memory();
@@ -61,7 +63,7 @@ async fn test_nexus_e2e_mocked() -> Result<()> {
 
     // 4. Run NexusNode
     // Path relative to binary/
-    let nexus = Arc::new(NexusNode::new("../.agent/agents/nexus.agent.md"));
+    let nexus = Arc::new(NexusNode::new("../.agent/agents/nexus.agent.md", "../.agent/registry.json"));
     
     let action = nexus.run(&store).await?;
     assert_eq!(action.as_str(), "work_assigned");

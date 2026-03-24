@@ -112,6 +112,11 @@ pub struct AgentDecision {
     pub action: String,
     /// Human-readable notes for logging or downstream agents (e.g. SENTINEL context).
     pub notes:  String,
+    
+    /// Optional metadata for specific actions
+    pub assign_to: Option<String>,
+    pub ticket_id: Option<String>,
+    pub issue_url: Option<String>,
 }
 
 // ── LLM Client Trait ──────────────────────────────────────────────────────

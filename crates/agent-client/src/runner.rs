@@ -72,7 +72,7 @@ impl AgentRunner {
                  If the provided context is empty or sparse, use your tools (like `list_issues` or `search_issues`) \
                  to fetch the current state of the repository before making a final decision. \
                  \n\nYou MUST end your final response with a JSON object on its own line: \
-                 {{\"action\": \"<action>\", \"notes\": \"<notes>\"}}",
+                 {{\"action\": \"<action>\", \"notes\": \"<notes>\", \"assign_to\": \"<worker_id>\", \"ticket_id\": \"<ticket_id>\"}}",
                 persona.system_prompt()
             )),
             Message::user(serde_json::to_string_pretty(&context)?),
@@ -128,12 +128,34 @@ impl AgentRunner {
 /// Extracts `{"action": ..., "notes": ...}` from the agent's final text.
 /// The LLM may include reasoning before the JSON object, so we scan for it.
 fn extract_decision(text: &str) -> Result<AgentDecision> {
-    // Try parsing the full text first (clean response)
+    // 1. Try parsing the full text first (clean response)
     if let Ok(d) = serde_json::from_str::<AgentDecision>(text.trim()) {
         return Ok(d);
     }
 
-    // Fall back: find the last JSON object in the text
+    // 2. Try finding markdown JSON blocks: ```json ... ```
+    if let Some(start) = text.find("```json") {
+        let remainder = &text[start + 7..];
+        if let Some(end) = remainder.find("```") {
+            let json_str = remainder[..end].trim();
+            if let Ok(d) = serde_json::from_str::<AgentDecision>(json_str) {
+                return Ok(d);
+            }
+        }
+    }
+
+    // 3. Fall back: scan for the last '{' and try to parse from there to the end
+    // This handles cases where there's a conversational preamble.
+    if let Some(last_brace) = text.rfind('{') {
+        let potential_json = &text[last_brace..];
+        // We might need to find the matching '}' if there's trailing junk, 
+        // but often LLMs just end with the JSON object.
+        if let Ok(d) = serde_json::from_str::<AgentDecision>(potential_json.trim()) {
+            return Ok(d);
+        }
+    }
+
+    // 4. Line by line fallback (original logic)
     for line in text.lines().rev() {
         let trimmed = line.trim();
         if trimmed.starts_with('{') {
