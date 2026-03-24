@@ -93,3 +93,6 @@ coverage/
 
 # Rust build artifacts
 /target/
+
+# Worker runtime data
+forge/

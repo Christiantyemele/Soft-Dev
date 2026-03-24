@@ -4,4 +4,4 @@ pub mod state;
 
 pub use registry::{Registry, RegistryEntry};
 pub use agent::{AgentDef, AgentPermissions};
-pub use state::{Ticket, WorkerSlot, WorkerStatus};
+pub use state::*;

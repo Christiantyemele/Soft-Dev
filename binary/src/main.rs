@@ -17,11 +17,14 @@ use crate::nodes::{NexusNode, ForgeNode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt::init();
     // 1. Load environment and tracing
-    let _ = dotenvy::dotenv();
-    tracing_subscriber::fmt()
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent_team=debug,pocketflow_core=debug".to_string()))
-        .init();
+    // The original tracing setup was more elaborate, but the instruction simplifies it.
+    // let _ = dotenvy::dotenv(); // Replaced by dotenvy::dotenv().ok();
+    // tracing_subscriber::fmt()
+    //     .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info,agent_team=debug,pocketflow_core=debug".to_string()))
+    //     .init();
 
     info!("🚀 Autonomous AI Dev Team starting (Phase 3 Integration)...");
 
@@ -53,20 +56,23 @@ async fn main() -> Result<()> {
     store.set(KEY_WORKER_SLOTS, serde_json::to_value(worker_slots)?).await;
 
     // 4. Build Flow
-    let nexus = Arc::new(NexusNode::new(".agent/agents/nexus.agent.md"));
+    let nexus = Arc::new(NexusNode::new(".agent/agents/nexus.agent.md", ".agent/registry.json"));
     let forge = Arc::new(ForgeNode::new("."));
 
     let flow = Flow::new("nexus")
         .add_node("nexus", nexus, vec![
             (ACTION_WORK_ASSIGNED, "forge"),
             (ACTION_NO_WORK,       "nexus"),
+            ("approve_command",    "forge"),
+            ("reject_command",     "nexus"),
         ])
         .add_node("forge", forge, vec![
             (ACTION_PR_OPENED, "nexus"),
             (ACTION_FAILED,    "nexus"),
             (ACTION_EMPTY,     "nexus"),
+            ("suspended",      "nexus"),
         ])
-        .max_steps(5); // safety cap for dry run
+        .max_steps(20); // allow more steps for real logic
 
     // 5. Run Flow
     info!("Starting Flow execution loop...");

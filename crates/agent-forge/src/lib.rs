@@ -2,12 +2,13 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use pocketflow_core::{BatchNode, SharedStore, Action};
-use config::{WorkerSlot, WorkerStatus, state::{KEY_WORKER_SLOTS, ACTION_PR_OPENED, ACTION_FAILED, ACTION_EMPTY}};
+use config::{WorkerSlot, WorkerStatus, state::{KEY_WORKER_SLOTS, KEY_COMMAND_GATE, ACTION_PR_OPENED, ACTION_FAILED, ACTION_EMPTY}};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{info, warn};
+use tokio::io;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeStatus {
@@ -51,24 +52,39 @@ impl BatchNode for ForgeNode {
         let slot: WorkerSlot = serde_json::from_value(item)?;
         let worker_id = slot.id.clone();
         
-        let ticket_id = match &slot.status {
-            WorkerStatus::Assigned { ticket_id } => ticket_id.clone(),
-            WorkerStatus::Working { ticket_id }  => ticket_id.clone(),
+        let (ticket_id, issue_url) = match &slot.status {
+            WorkerStatus::Assigned { ticket_id, issue_url } => (ticket_id.clone(), issue_url.clone()),
+            WorkerStatus::Working { ticket_id, issue_url }  => (ticket_id.clone(), issue_url.clone()),
             _ => return Ok(json!({"outcome": "idle", "worker_id": worker_id})),
         };
 
+        // Ensure worker dir exists
         let worker_dir = self.workspace_root.join("forge").join("workers").join(&worker_id);
+        if !worker_dir.exists() {
+            tokio::fs::create_dir_all(&worker_dir).await?;
+        }
         let status_path = worker_dir.join("STATUS.json");
 
-        info!(worker = worker_id, ticket = ticket_id, "Spawning Claude Code...");
+        let log_path = worker_dir.join("worker.log");
+        let log_file = std::fs::File::create(&log_path)?;
+        let log_file_err = log_file.try_clone()?;
+
+        info!(worker = worker_id, ticket = ticket_id, issue_url = ?issue_url, "Spawning Claude Code...");
 
         // 1. Prepare command
+        let issue_context = if let Some(url) = &issue_url {
+            format!("Issue URL: {}. Use your MCP tools (e.g. `get_issue` or `read_url`) to fetch the full description.", url)
+        } else {
+            "".to_string()
+        };
+
         let prompt = format!(
             "You are FORGE agent {}. \
              Implement ticket {}. \
+             {} \
              Branch: forge/{}/{}. \
              When done, open a PR and write STATUS.json.",
-            worker_id, ticket_id, worker_id, ticket_id
+            worker_id, ticket_id, issue_context, worker_id, ticket_id
         );
 
         let mut child = tokio::process::Command::new("claude")
@@ -76,11 +92,19 @@ impl BatchNode for ForgeNode {
             .arg(&prompt)
             .current_dir(&worker_dir)
             .env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default())
+            .stdout(log_file)
+            .stderr(log_file_err)
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn Claude Code: {}", e))?;
 
-        // 2. Wait with timeout (30 min)
-        let timeout_dur = std::time::Duration::from_secs(1800);
+        // MONITORING: Since we redirected stdout/stderr to a file, we can't easily 
+        // monitor for "Dangerous command" strings in real-time within this process 
+        // without tailing the file. For now, we'll let it run and check the STATUS.json
+        // or the log file afterwards.
+        
+        let timeout_dur = std::time::Duration::from_secs(1800); // 30 minutes
+
+        // 2. Wait for process
         let result = tokio::time::timeout(timeout_dur, child.wait()).await;
 
         match result {
@@ -133,6 +157,11 @@ impl BatchNode for ForgeNode {
             .await
             .unwrap_or_default();
 
+        let mut command_gate: HashMap<String, Value> = store
+            .get_typed(KEY_COMMAND_GATE)
+            .await
+            .unwrap_or_default();
+
         let mut all_success = true;
 
         for res_opt in &results {
@@ -149,23 +178,43 @@ impl BatchNode for ForgeNode {
             let outcome   = res["outcome"].as_str().unwrap_or("failed");
 
             if let Some(slot) = slots.get_mut(worker_id) {
-                if outcome == "pr_opened" {
-                    info!(worker = worker_id, ticket = ticket_id, "Work completed successfully");
-                    slot.status = WorkerStatus::Done { 
-                        ticket_id: ticket_id.to_string(), 
-                        outcome: outcome.to_string() 
-                    };
-                } else if outcome != "idle" {
-                    warn!(worker = worker_id, ticket = ticket_id, outcome, "Work failed");
-                    slot.status = WorkerStatus::Idle;
-                    all_success = false;
+                match outcome {
+                    "pr_opened" => {
+                        info!(worker = worker_id, ticket = ticket_id, "Work completed successfully");
+                        slot.status = WorkerStatus::Done { 
+                            ticket_id: ticket_id.to_string(), 
+                            outcome: outcome.to_string() 
+                        };
+                    }
+                    "suspended" => {
+                        let reason = res["reason"].as_str().unwrap_or("unknown");
+                        info!(worker = worker_id, ticket = ticket_id, reason, "Work suspended for approval");
+                        slot.status = WorkerStatus::Suspended { 
+                            ticket_id: ticket_id.to_string(), 
+                            reason: reason.to_string(),
+                            issue_url: res["issue_url"].as_str().map(|s| s.to_string()),
+                        };
+                        // Push to command gate
+                        command_gate.insert(worker_id.to_string(), res.clone());
+                    }
+                    "idle" => {}
+                    _ => {
+                        warn!(worker = worker_id, ticket = ticket_id, outcome, "Work failed");
+                        slot.status = WorkerStatus::Idle;
+                        all_success = false;
+                    }
                 }
             }
         }
 
         store.set(KEY_WORKER_SLOTS, json!(slots)).await;
+        store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
 
-        if all_success && !results.is_empty() {
+        let has_suspended = slots.values().any(|s| matches!(s.status, WorkerStatus::Suspended { .. }));
+
+        if has_suspended {
+            Ok(Action::new("suspended"))
+        } else if all_success && !results.is_empty() {
             Ok(Action::new(ACTION_PR_OPENED))
         } else if results.is_empty() {
             Ok(Action::new(ACTION_EMPTY))
