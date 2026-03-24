@@ -1,10 +1,11 @@
-// crates/agent-client/src/lib.rs
 pub mod anthropic;
+pub mod openai;
 pub mod mcp;
 pub mod runner;
 pub mod types;
 
 pub use anthropic::AnthropicClient;
+pub use openai::OpenAiClient;
 pub use mcp::McpSession;
 pub use runner::AgentRunner;
-pub use types::{AgentDecision, AgentPersona, Message, ToolSchema, ToolResult};
+pub use types::{AgentDecision, AgentPersona, Message, ToolSchema, ToolResult, LlmClient, LlmResponse};
