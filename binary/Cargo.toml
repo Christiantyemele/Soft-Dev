@@ -11,6 +11,8 @@ path = "src/main.rs"
 pocketflow-core = { path = "../crates/pocketflow-core" }
 config          = { path = "../crates/config" }
 github          = { path = "../crates/github" }
+agent-nexus     = { path = "../crates/agent-nexus" }
+agent-forge     = { path = "../crates/agent-forge" }
 
 anyhow      = { workspace = true }
 serde       = { workspace = true }
@@ -20,3 +22,6 @@ tracing     = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy     = { workspace = true }
 async-trait = "0.1"
+
+[dev-dependencies]
+mockito = "1"

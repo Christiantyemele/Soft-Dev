@@ -15,7 +15,7 @@ use crate::types::{ContentBlock, Message, ToolSchema};
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+const DEFAULT_ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION:  &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32  = 4096;
 
@@ -135,10 +135,11 @@ impl AnthropicClient {
             "tools":      tools_json,
         });
 
-        debug!(model = self.model, "→ Anthropic API call");
+        let api_url = std::env::var("ANTHROPIC_API_URL")
+            .unwrap_or_else(|_| DEFAULT_ANTHROPIC_API_URL.to_string());
 
         let resp = self.http
-            .post(ANTHROPIC_API_URL)
+            .post(api_url)
             .header("x-api-key",         &self.api_key)
             .header("anthropic-version",  ANTHROPIC_VERSION)
             .header("content-type",       "application/json")
