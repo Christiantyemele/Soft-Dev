@@ -3,7 +3,7 @@ mod state;
 mod nodes;
 
 use anyhow::Result;
-use pocketflow_core::{Flow, SharedStore, Action};
+use pocketflow_core::{Flow, SharedStore};
 use tracing::{info};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 
     // 4. Build Flow
     let nexus = Arc::new(NexusNode::new(".agent/registry.json"));
-    let forge = Arc::new(ForgeNode);
+    let forge = Arc::new(ForgeNode::new("."));
 
     let flow = Flow::new("nexus")
         .add_node("nexus", nexus, vec![

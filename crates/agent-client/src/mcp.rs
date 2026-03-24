@@ -18,12 +18,18 @@ use tokio::{
 };
 use tracing::{debug, info};
 
-/// Default command to spawn the GitHub MCP server via Docker.
-/// Override by setting GITHUB_MCP_CMD env var.
-pub const DEFAULT_MCP_CMD: &[&str] = &[
+/// Command to spawn the local GitHub MCP server via Docker.
+pub const DOCKER_MCP_CMD: &[&str] = &[
     "docker", "run", "-i", "--rm",
     "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
     "ghcr.io/github/github-mcp-server",
+];
+
+/// Command to spawn the hosted GitHub MCP server via a stdio bridge (npx).
+/// Connects to the official cloud endpoint: https://api.githubcopilot.com/mcp
+pub const HOSTED_MCP_CMD: &[&str] = &[
+    "sh", "-c",
+    "URI=https://api.githubcopilot.com/mcp/ BEARER_TOKEN=\"Bearer $GITHUB_PERSONAL_ACCESS_TOKEN\" npx -y @pyroprompts/mcp-stdio-to-streamable-http-adapter",
 ];
 
 pub struct McpSession {
@@ -44,7 +50,7 @@ impl McpSession {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit()) // surface errors in our logs
             .spawn()
-            .context("Failed to spawn GitHub MCP server — is Docker running?")?;
+            .context("Failed to spawn GitHub MCP server")?;
 
         let stdin  = child.stdin.take().context("Failed to open MCP stdin")?;
         let stdout = BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
@@ -54,9 +60,25 @@ impl McpSession {
         Ok(session)
     }
 
-    /// Convenience: connect using the default Docker command.
+    /// Convenience: connects to either the 'hosted' or 'docker' MCP implementation.
+    /// Hierarchy:
+    ///   1. GITHUB_MCP_CMD (Full command override)
+    ///   2. GITHUB_MCP_TYPE (Either 'docker' or 'hosted', defaults to 'hosted')
     pub async fn connect_default() -> Result<Self> {
-        Self::connect(DEFAULT_MCP_CMD).await
+        // 1. Check for full command override
+        if let Ok(cmd_str) = std::env::var("GITHUB_MCP_CMD") {
+            let cmd: Vec<&str> = cmd_str.split_whitespace().collect();
+            if !cmd.is_empty() {
+                return Self::connect(&cmd).await;
+            }
+        }
+
+        // 2. Check for type selection
+        let mcp_type = std::env::var("GITHUB_MCP_TYPE").unwrap_or_else(|_| "hosted".to_string());
+        match mcp_type.as_str() {
+            "docker" => Self::connect(DOCKER_MCP_CMD).await,
+            "hosted" | _ => Self::connect(HOSTED_MCP_CMD).await,
+        }
     }
 
     // ── Private: JSON-RPC helpers ─────────────────────────────────────────
