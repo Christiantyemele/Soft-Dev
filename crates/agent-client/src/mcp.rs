@@ -25,14 +25,6 @@ pub const DOCKER_MCP_CMD: &[&str] = &[
     "ghcr.io/github/github-mcp-server",
 ];
 
-/// Command to spawn the hosted GitHub MCP server via a stdio bridge (npx).
-/// Connects to the official cloud endpoint: https://api.githubcopilot.com/mcp/
-/// NOTE: The BEARER_TOKEN and URI env vars are injected via Rust's Command::env()
-/// for reliability — see connect_hosted() below.
-pub const HOSTED_MCP_CMD: &[&str] = &[
-    "npx", "-y", "@pyroprompts/mcp-stdio-to-streamable-http-adapter",
-];
-
 pub struct McpSession {
     _child:  Child,
     stdin:   ChildStdin,
@@ -82,18 +74,20 @@ impl McpSession {
         }
     }
 
-    /// Spawn the hosted MCP bridge (npx), injecting the required env vars in
-    /// Rust so that the Bearer prefix is always present and correctly formed.
+    /// Spawn the hosted MCP bridge (mcp-proxy), injecting the required env vars
+    /// and arguments for the GitHub Copilot MCP endpoint.
     async fn connect_hosted() -> Result<Self> {
         let pat = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
             .context("GITHUB_PERSONAL_ACCESS_TOKEN must be set for hosted MCP")?;
-        let bearer = format!("Bearer {}", pat);
 
-        info!("Spawning hosted GitHub MCP server via npx bridge");
-        let mut child = Command::new(HOSTED_MCP_CMD[0])
-            .args(&HOSTED_MCP_CMD[1..])
-            .env("URI", "https://api.githubcopilot.com/mcp/")
-            .env("BEARER_TOKEN", &bearer)
+        info!("Spawning hosted GitHub MCP server via mcp-proxy bridge");
+        let mut child = Command::new("mcp-proxy")
+            .arg("convert")
+            .arg("https://api.githubcopilot.com/mcp/")
+            .arg("--auth")
+            .arg(format!("Bearer {}", pat))
+            .arg("--protocol")
+            .arg("stream")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
