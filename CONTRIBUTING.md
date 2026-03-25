@@ -78,7 +78,7 @@ cargo test -p agent-forge --test forge_claude_e2e
 
 If you want to contribute, please follow these steps:
 
-1. **Understand the Architecture**: Read the [design.pdf](file:///home/christian/sandbox/Soft-Dev/design.pdf) and [design.md](file:///home/christian/sandbox/Soft-Dev/docs/design.md) (provided in the repository) to get a deep understanding of the PocketFlow engine and agent roles.
+1. **Understand the Architecture**: Read the [design.pdf](file:///home/christian/sandbox/Soft-Dev/docs/design.pdf) and [design.md](file:///home/christian/sandbox/Soft-Dev/docs/design.md) (provided in the repository) to get a deep understanding of the PocketFlow engine and agent roles.
 2. **Verify the Environment**: Run all tests (unit and E2E) to ensure the current flow is running fine on your side:
    ```bash
    cargo test --workspace
