@@ -1,27 +1,46 @@
-# Autonomous AI Dev Team
+# 🤖 Autonomous AI Dev Team
 
 An autonomous software development team composed of five AI agents working in a unified Rust/Tokio flow.
 
-## 🤖 The Team
+## 🚀 Quick Start
+
+1. **Clone & Setup**:
+   ```bash
+   git clone <repo-url>
+   cd Soft-Dev
+   cp .env.example .env
+   # Edit .env with your keys (OPENAI_API_KEY, GITHUB_PERSONAL_ACCESS_TOKEN)
+   ```
+
+2. **Run the Mock Demo** (No real keys required if using mock servers):
+   ```bash
+   # Start mock servers in separate terminals if needed
+   # python3 scripts/mock_llm.py
+   # python3 scripts/mock_mcp.py
+   cargo run -p agent-team --bin demo
+   ```
+
+3. **Run Real-World Orchestration**:
+   ```bash
+   cargo run -p agent-team --bin real_test
+   ```
+
+## 🏗️ The Team
 - **NEXUS** (Orchestrator): Scrum Master & Tech Lead. Assigns tickets and approves dangerous commands.
 - **FORGE** (Builder): Pragmatic Senior Engineer. Writes code, tests, and pushes PRs via GitHub MCP.
 - **SENTINEL** (Reviewer): Paranoid security auditor. Reviews PRs and ensures all logic is tested.
 - **VESSEL** (DevOps): Methodical deployment expert. Manages CI/CD and rollbacks.
 - **LORE** (Writer): Chronicler & Documenter. Writes ADRs and maintains the project history.
 
-## 🏗️ Architecture
-Built on **PocketFlow (Rust)**, the team operates as a Graph + Shared Store state machine:
-1. **Flow**: Defined in `main.rs`, handles all state transitions.
-2. **SharedStore**: Redis-backed concurrent context for agent communication.
-3. **Claude Code**: The primary execution engine for all agents, routed via a **LiteLLM** proxy.
+## 📂 Project Structure
+- `crates/agent-nexus`: Orchestration logic and ticket assignment.
+- `crates/agent-forge`: Code execution via Claude Code CLI.
+- `crates/agent-client`: Multi-provider LLM client (OpenAI/Anthropic) + MCP integration.
+- `binary/src/bin/real_test.rs`: Live orchestration entry point.
+- `binary/src/bin/demo.rs`: Mocked E2E demonstration.
 
-## ⚙️ Configuration
-The team's "constitution" is located in the `.agent/` directory:
-- `registry.json`: Live registry of active agents and instances.
-- `agents/`: Personality and capability definitions for each agent.
-- `standards/`: Coding, Security, and Review rules.
-- `templates/`: Structured Markdown templates for tasks and status reports.
+## 📖 Learn More
+- [CONTRIBUTING.md](file:///home/christian/sandbox/Soft-Dev/CONTRIBUTING.md): Detailed setup, testing, and contribution workflow.
+- [FINAL_DESIGN.md](file:///home/christian/sandbox/Soft-Dev/docs/FINAL_DESIGN.md): Technical specification of the PocketFlow architecture.
 
-## 🚀 Getting Started
-Check the `FINAL_DESIGN.md` in the development brain for the full technical specification.
 <img width="1068" height="378" alt="image" src="https://github.com/user-attachments/assets/d37c29d5-4465-43fe-ac6b-c257fd8413a4" />

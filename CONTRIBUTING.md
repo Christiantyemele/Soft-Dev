@@ -1,74 +1,84 @@
 # Contributing to Autonomous AI Dev Team
 
-Thank you for your interest in contributing to the Autonomous AI Dev Team project! This guide will help you get started with the codebase, understand the architecture, and follow our development standards.
+This guide explains how to set up your environment, run the project in different modes, and contribute effectively.
 
-## 🏗️ Architecture Overview
+## 🛠️ Prerequisites
 
-The project is built on **PocketFlow (Rust)** and operates as a multi-agent system where agents coordinate through a **Graph + Shared Store** model.
+1. **Rust**: [Install Rust](https://rustup.rs/) (latest stable).
+2. **Python 3**: Required for running mock servers.
+3. **Claude Code CLI** (Optional but recommended for Forge):
+   ```bash
+   npm install -g @anthropic-ai/claude-code
+   claude auth login
+   ```
 
-### The Team (Agents)
-- **NEXUS**: The Orchestrator (Scrum Master). Manages the high-level flow and tool calling.
-- **FORGE**: The Builder. Implements features, writes code, and handles technical tasks.
-- **SENTINEL**: The Reviewer. Audits code for security and quality errors.
-- **VESSEL**: The DevOps expert. Manages deployments and infrastructure.
-- **LORE**: The Documenter. Maintains project history and ADRs.
+## ⚙️ Environment Setup
 
-### Crate Structure
-- `crates/agent-client`: Core client for Anthropic API and MCP (Model Context Protocol).
-- `crates/agent-nexus`: Implementation of the Nexus agent's logic.
-- `crates/agent-forge`: Implementation of the Forge agent's logic.
-- `crates/config`: Shared state and configuration types.
-- `binary`: The main entry point and integration test suite.
+1. **Copy Template**:
+   ```bash
+   cp .env.example .env
+   ```
 
-## 🛠️ Getting Started
+2. **Configure Variables**:
+   - `OPENAI_API_KEY`: Required for Nexus if using OpenAI.
+   - `LLM_PROVIDER`: Set to `openai` or `anthropic`.
+   - `GITHUB_PERSONAL_ACCESS_TOKEN`: Required for real-world PR creation.
+   - `GITHUB_REPOSITORY`: The target repository (e.g., `owner/repo`).
 
-### Prerequisites
-1. **Rust**: Latest stable version.
-2. **Docker**: Required for local MCP server isolation (optional if using `hosted` mode).
-3. **Node.js/npx**: Required for the `hosted` MCP bridge.
+## 🚀 Running the Project
 
-### Environment Setup
-Create a `.env` file or export the following variables:
-```bash
-ANTHROPIC_API_KEY=your_key_here
-GITHUB_PERSONAL_ACCESS_TOKEN=your_pat_here
-GITHUB_MCP_TYPE=hosted # or 'docker'
-```
+### Option A: Local Mock Demo (Safe, No API Keys Needed)
+This uses local mock servers for the LLM and MCP, and a mock Claude script for Forge.
 
-### Running the Project
-```bash
-cargo run -p agent-team
-```
+1. **Start Mock Infrastructure**:
+   ```bash
+   # Terminal 1: Mock LLM (OpenAI-compatible)
+   python3 scripts/mock_llm.py
+   
+   # Terminal 2: Mock GitHub MCP
+   # (The demo binary starts this automatically via GITHUB_MCP_CMD)
+   ```
+
+2. **Run Demo**:
+   ```bash
+   cargo run -p agent-team --bin demo
+   ```
+
+### Option B: Real-World Orchestration
+This connects to live GitHub and live LLM providers.
+
+1. **Run Real Test**:
+   ```bash
+   cargo run -p agent-team --bin real_test
+   ```
 
 ## 🧪 Testing
 
-We prioritize high test coverage and reliability.
-
 ### Unit Tests
-Run unit tests for all crates:
 ```bash
 cargo test --workspace
 ```
 
-### End-to-End (E2E) Tests
-The Nexus agent's E2E test simulates a full orchestration loop with real MCP connectivity:
+### End-to-End Tests
+We have specific E2E tests for core logic:
 ```bash
-cargo test -p agent-team --test nexus_e2e
+# Test Nexus decision making
+cargo test -p agent-nexus
+
+# Test Forge suspension logic (mocked)
+cargo test -p agent-forge --test forge_claude_e2e
 ```
 
-## 📖 Development Workflow (Agentic Coding)
+## 📂 Architecture Overview
+- **SharedStore**: A key-value store where agents exchange state (e.g., `worker_slots`, `tickets`).
+- **Graph Nodes**: Each agent is a `BatchNode` that reads from the store and writes back "actions" (e.g., `work_assigned`).
+- **PocketFlow**: The engine that executes the graph and manages state transitions.
 
-We follow the **Agentic Coding** methodology:
-1. **Planning**: Create an `implementation_plan.md` documenting your proposed changes.
-2. **Implementation**: Code your changes iteratively.
-3. **Verification**: Run all tests (unit + E2E).
-4. **Documentation**: Create a `walkthrough.md` to demonstrate the changes.
+## 📜 Development Workflow
+1. **Plan**: Propose changes in an `implementation_plan.md`.
+2. **Implement**: Keep crates focused and minimal.
+3. **Verify**: Ensure both unit tests and `demo` pass.
+4. **Log**: Forge work is logged to `forge/workers/<id>/worker.log` during execution.
 
-## 📜 Coding Standards
-
-- **Simplicity**: Favor readability over complex abstractions.
-- **Fail Fast**: Use `anyhow` for application errors and `thiserror` for library crates.
-- **Async**: Use `tokio` for all asynchronous operations.
-- **Commits**: Use descriptive, conventional commit messages.
-
-For more detailed rules, see `.agent/standards/`.
+---
+For more specific rules, see `.agent/standards/`.
