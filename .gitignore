@@ -98,6 +98,6 @@ coverage/
 /forge/
 
 # Sprintless runtime data (but keep plugin)
-.sprintless/locks/
-.sprintless/pairs/
-!.sprintless/plugin/
+sprintless/locks/
+sprintless/pairs/
+!sprintless/plugin/
