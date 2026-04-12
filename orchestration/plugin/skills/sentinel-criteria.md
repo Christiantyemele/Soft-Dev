@@ -19,9 +19,9 @@ and one for the primary error path?
 
 ### 3. Standards compliance
 
-Does the implementation follow `.agent/standards/CODING.md`?
-Does it use the patterns in `.agent/arch/patterns.md`?
-Does it respect the API contracts in `.agent/arch/api-contracts.md`?
+Does the implementation follow `orchestration/agent/standards/CODING.md`?
+Does it use the patterns in `orchestration/agent/arch/patterns.md`?
+Does it respect the API contracts in `orchestration/agent/arch/api-contracts.md`?
 
 **FAIL:** any violation of the team's written standards
 
