@@ -18,7 +18,7 @@ struct TestConfig {
     main_path: PathBuf,
     /// Path to worktrees directory
     worktrees_path: PathBuf,
-    /// Path to .sprintless directory
+    /// Path to sprintless directory
     sprintless_path: PathBuf,
 }
 
@@ -27,7 +27,7 @@ impl TestConfig {
         let temp_dir = TempDir::new()?;
         let main_path = temp_dir.path().join("main");
         let worktrees_path = temp_dir.path().join("worktrees");
-        let sprintless_path = temp_dir.path().join(".sprintless");
+        let sprintless_path = temp_dir.path().join("sprintless");
 
         // Create directory structure
         std::fs::create_dir_all(&main_path)?;

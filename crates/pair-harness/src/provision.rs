@@ -118,9 +118,9 @@ impl Provisioner {
         // First check for ORCHESTRATOR_DIR env var (points to orchestrator source with plugin)
         // Fall back to project_root for backwards compatibility
         let plugin_source = if let Ok(orch_dir) = std::env::var("ORCHESTRATOR_DIR") {
-            PathBuf::from(orch_dir).join(".sprintless").join("plugin")
+            PathBuf::from(orch_dir).join("sprintless").join("plugin")
         } else {
-            self.project_root.join(".sprintless").join("plugin")
+            self.project_root.join("sprintless").join("plugin")
         };
 
         // Check if plugin exists

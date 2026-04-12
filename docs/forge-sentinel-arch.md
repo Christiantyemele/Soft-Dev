@@ -146,7 +146,7 @@ Auto mode (`defaultMode: "auto"`) allows the agent to execute pre-approved opera
 }
 ```
 
-**Location:** `.sprintless/pairs/pair-N/sentinel/.claude/settings.json` (per pair)
+**Location:** `sprintless/pairs/pair-N/sentinel/.claude/settings.json` (per pair)
 
 **Key constraints:**
 - SENTINEL is **read-only** for source files (can only write to `shared/`)
@@ -217,16 +217,16 @@ new code, runs tests — all within its own worktree. It never touches
 NEXUS locks files identified in the ticket's `touched_files[]` before assignment. However, development often reveals new dependencies.
 
 **The Dynamic Lock Protocol:**
-1.  **Initial Lock:** NEXUS locks files explicitly listed in the ticket by writing to `.sprintless/locks/${file_hash}.json`.
+1.  **Initial Lock:** NEXUS locks files explicitly listed in the ticket by writing to `sprintless/locks/${file_hash}.json`.
 2.  **Discovery:** When FORGE attempts to write to a file *not* in its lock map, the `pre_write_check.sh` hook intercepts **before** the write executes.
-3.  **Atomic Lock Attempt:** The hook uses `flock` (filesystem-level lock) on `.sprintless/locks/${file_hash}.lock` to ensure atomic lock acquisition, then checks the `.json` file.
+3.  **Atomic Lock Attempt:** The hook uses `flock` (filesystem-level lock) on `sprintless/locks/${file_hash}.lock` to ensure atomic lock acquisition, then checks the `.json` file.
 4.  **Resolution:**
     *   **Success:** Lock file doesn't exist or belongs to this pair. FORGE proceeds with the write. Lock JSON is written: `{pair: "pair-1", file: "src/auth.ts", acquired: "2025-03-24T10:00:00Z"}`.
     *   **Failure:** Lock file exists and belongs to another pair. The write is blocked with exit code 2. FORGE is notified exactly which pair owns the file and must either find an alternative implementation path or set status to `BLOCKED`.
 
 This ensures safety even when the scope expands beyond the initial ticket estimate. The atomic nature of `flock` prevents race conditions even if two pairs attempt to lock the same file simultaneously.
 
-**Lock storage:** `.sprintless/locks/` directory contains:
+**Lock storage:** `sprintless/locks/` directory contains:
 - `${sha256(filepath)}.lock` — filesystem lock (used by `flock`)
 - `${sha256(filepath)}.json` — metadata `{pair, file, acquired_at}`
 
@@ -337,7 +337,7 @@ the ticket is flagged as BLOCKED with reason REBASE_CONFLICT.
 │   ├── pair-2/                     ← FORGE-2's working tree (branch: forge-2/T-47)
 │   └── pair-N/                     ← idle (on main branch)
 │
-└── .sprintless/
+└── sprintless/
     ├── pairs/
     │   ├── pair-1/
     │   │   └── shared/             ← FORGE-1 ↔ SENTINEL-1 communication
@@ -363,7 +363,7 @@ the ticket is flagged as BLOCKED with reason REBASE_CONFLICT.
 
 **Key separation:**
 - `worktrees/pair-N/` — the codebase FORGE works in (Git-managed)
-- `.sprintless/pairs/pair-N/shared/` — the communication channel (not in Git)
+- `sprintless/pairs/pair-N/shared/` — the communication channel (not in Git)
 
 The `shared/` directory is explicitly in `.gitignore`. It is runtime
 state, not project state. LORE reads from it for documentation but
@@ -388,7 +388,7 @@ Claude Code's plugin system allows a directory to define:
 ### Plugin directory structure
 
 ```
-.sprintless/plugin/
+sprintless/plugin/
 │
 ├── plugin.json                     ← plugin manifest
 │
@@ -443,7 +443,7 @@ Claude Code's plugin system allows a directory to define:
 }
 ```
 
-**Note:** MCP configuration is NOT in `plugin.json` because it must be pair-specific. Instead, the harness generates `worktrees/pair-N/.claude/mcp.json` and `.sprintless/pairs/pair-N/sentinel/.claude/mcp.json` from the `mcp/mcp.json.template` with environment variables filled in.
+**Note:** MCP configuration is NOT in `plugin.json` because it must be pair-specific. Instead, the harness generates `worktrees/pair-N/.claude/mcp.json` and `sprintless/pairs/pair-N/sentinel/.claude/mcp.json` from the `mcp/mcp.json.template` with environment variables filled in.
 
 ### How the harness provisions the plugin
 
@@ -452,7 +452,7 @@ When the harness provisions a pair slot:
 ```rust
 // pair-harness/src/provision.rs
 pub fn setup_pair_plugin(pair_id: &str, config: &PairConfig) -> Result<()> {
-    let plugin_source = Path::new("/project/.sprintless/plugin");
+    let plugin_source = Path::new("/project/sprintless/plugin");
     
     // 1. Symlink plugin to FORGE .claude directory
     let forge_plugins = config.worktree.join(".claude/plugins");
@@ -534,7 +534,7 @@ Each pair's `mcp.json` is generated dynamically by the harness with environment-
 }
 ```
 
-**Location:** `worktrees/pair-N/.claude/mcp.json` (FORGE) and `.sprintless/pairs/pair-N/sentinel/.claude/mcp.json` (SENTINEL)
+**Location:** `worktrees/pair-N/.claude/mcp.json` (FORGE) and `sprintless/pairs/pair-N/sentinel/.claude/mcp.json` (SENTINEL)
 
 **Environment variable substitution:** The harness replaces `${VAR}` placeholders with actual values before writing the config.
 
@@ -799,7 +799,7 @@ SHARED="${SPRINTLESS_SHARED}"
 
 # Log session start to shared event log
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] forge-${PAIR_ID} session_start ticket=${TICKET_ID}" \
-  >> .sprintless/events.log
+  >> sprintless/events.log
 
 # Check if this is a resume (HANDOFF.md exists)
 if [ -f "${SHARED}/HANDOFF.md" ]; then
@@ -821,11 +821,11 @@ fi
 
 FILE="${CLAUDE_TOOL_INPUT_FILE_PATH}"
 PAIR_ID="${SPRINTLESS_PAIR_ID}"
-LOCKS_DIR=".sprintless/locks"
+LOCKS_DIR="sprintless/locks"
 
 # Skip lock check for shared/ artifacts — those are pair-scoped already
 case "$FILE" in
-  *.sprintless/pairs/*/shared/*)
+  *sprintless/pairs/*/shared/*)
     exit 0
     ;;
 esac
@@ -878,7 +878,7 @@ exit 0
 
 ```bash
 # In pair-harness/src/cleanup.rs
-for lock in .sprintless/locks/*.json; do
+for lock in sprintless/locks/*.json; do
   OWNER=$(jq -r '.pair' "$lock")
   if [ "$OWNER" = "$PAIR_ID" ]; then
     rm "$lock" "${lock%.json}.lock"
@@ -898,7 +898,7 @@ WORKTREE="${SPRINTLESS_WORKTREE}"
 
 # For shared/ artifacts, ensure atomic write was used (.tmp + rename pattern)
 case "$FILE" in
-  *.sprintless/pairs/*/shared/*)
+  *sprintless/pairs/*/shared/*)
     # Verify file was written atomically (should never see .tmp files at this point)
     if [[ "$FILE" == *.tmp ]]; then
       echo "ERROR: Temporary file leaked to filesystem: ${FILE}"
@@ -1087,7 +1087,7 @@ PAIR_ID="${SPRINTLESS_PAIR_ID}"
 
 # Log SENTINEL spawn to shared event log
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] sentinel-${PAIR_ID} spawned segment=${SEGMENT:-plan_review}" \
-  >> .sprintless/events.log
+  >> sprintless/events.log
 
 if [ -z "$SEGMENT" ]; then
   echo "═══════════════════════════════════════════════════════"
@@ -1137,7 +1137,7 @@ FILE="${CLAUDE_TOOL_INPUT_FILE_PATH}"
 
 # For shared/ artifacts, ensure atomic write
 case "$FILE" in
-  *.sprintless/pairs/*/shared/*)
+  *sprintless/pairs/*/shared/*)
     # Write to .tmp first, then the agent should rename
     if [[ "$FILE" != *.tmp ]]; then
       # Verify the final file exists (atomic rename completed)
@@ -1887,7 +1887,7 @@ Harness writes STATUS.json:
 ↓
 NEXUS escalates to human via Slack:
   "pair-1 T-42 segment 3 cannot be agreed after 5 cycles.
-   See .sprintless/pairs/pair-1/shared/segment-3-eval.md history."
+   See sprintless/pairs/pair-1/shared/segment-3-eval.md history."
 ```
 
 ### Contract disagreement (> 3 rounds)
@@ -2210,7 +2210,7 @@ GITHUB_TOKEN=ghp_test...
 ANTHROPIC_API_KEY=sk-ant-test...
 
 # Registry configuration
-# .sprintless/registry.json
+# sprintless/registry.json
 {
   "project": {
     "name": "test-project",
@@ -2283,7 +2283,7 @@ echo ""
 log_nexus "Starting Sprintless system..."
 cargo run --bin sprintless -- \
   --repo test-org/test-project \
-  --registry .sprintless/registry.json &
+  --registry sprintless/registry.json &
 SYSTEM_PID=$!
 sleep 5
 log_success "System started (PID: $SYSTEM_PID)"
@@ -2308,7 +2308,7 @@ echo ""
 # Step 4: Harness provisions pair-1 worktree
 log_harness "pair-1" "Provisioning worktree for T-42..."
 log_harness "pair-1" "  git worktree add worktrees/pair-1 -b forge-1/T-42"
-log_harness "pair-1" "  Created .sprintless/pairs/pair-1/shared/"
+log_harness "pair-1" "  Created sprintless/pairs/pair-1/shared/"
 log_harness "pair-1" "  Generated worktrees/pair-1/.claude/settings.json"
 log_harness "pair-1" "  Generated worktrees/pair-1/.claude/mcp.json"
 log_harness "pair-1" "  Symlinked plugin to worktrees/pair-1/.claude/plugins/sprintless"
@@ -2320,8 +2320,8 @@ log_harness "pair-1" "Spawning FORGE process..."
 log_forge "pair-1" "Session started (context window: 200k tokens)"
 log_forge "pair-1" "Hook: session_start.sh"
 log_forge "pair-1" "  NEW SESSION: No handoff found."
-log_forge "pair-1" "  Reading .sprintless/pairs/pair-1/shared/TICKET.md"
-log_forge "pair-1" "  Reading .sprintless/pairs/pair-1/shared/TASK.md"
+log_forge "pair-1" "  Reading sprintless/pairs/pair-1/shared/TICKET.md"
+log_forge "pair-1" "  Reading sprintless/pairs/pair-1/shared/TASK.md"
 log_success "FORGE-1 spawned"
 echo ""
 
@@ -2499,7 +2499,7 @@ log_harness "pair-1" "git worktree remove worktrees/pair-1"
 log_harness "pair-1" "Recreating idle worktree on main branch"
 log_harness "pair-1" "git worktree add worktrees/pair-1 main"
 log_harness "pair-1" "Clearing file locks owned by pair-1"
-log_harness "pair-1" "  Removed .sprintless/locks/*.json (owned by pair-1)"
+log_harness "pair-1" "  Removed sprintless/locks/*.json (owned by pair-1)"
 log_harness "pair-1" "pair-1 status: IDLE"
 log_success "pair-1 ready for next ticket"
 echo ""

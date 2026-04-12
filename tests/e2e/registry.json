@@ -61,8 +61,8 @@
   ],
   "harness_config": {
     "claude_path": "claude",
-    "plugin_path": ".sprintless/plugin",
+    "plugin_path": "sprintless/plugin",
     "worktrees_base": "worktrees",
-    "sprintless_dir": ".sprintless"
+    "sprintless_dir": "sprintless"
   }
 }
