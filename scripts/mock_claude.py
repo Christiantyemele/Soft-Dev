@@ -153,14 +153,19 @@ def main():
     parser.add_argument("--print", action="store_true", help="Print mode")
     parser.add_argument("--output-format", help="Output format (json, text)")
     parser.add_argument("--output-dir", help="Directory to write output artifacts (STATUS.json, etc.)")
+    parser.add_argument("--dangerously-skip-permissions", action="store_true", help="Skip permissions")
+    parser.add_argument("--allowedTools", help="Allowed tools")
     parser.add_argument("prompt", nargs="*", default="", help="Prompt to process")
     
     args = parser.parse_args()
     # Handle prompt as list or string
-    if isinstance(args.prompt, list):
+    if isinstance(args.prompt, list) and args.prompt:
         prompt = " ".join(args.prompt)
+    elif not sys.stdin.isatty():
+        # Read from stdin if piped
+        prompt = sys.stdin.read()
     else:
-        prompt = args.prompt
+        prompt = args.prompt if isinstance(args.prompt, str) else ""
     
     # Detect plugin from path
     plugin_dir = args.plugin_dir
