@@ -1,0 +1,89 @@
+// crates/agent-vessel/src/types.rs
+//
+// VESSEL-specific types and configuration.
+
+use pocketflow_core::{CiPollConfig, MergeMethod};
+use serde::{Deserialize, Serialize};
+
+/// Configuration for the VESSEL agent.
+#[derive(Debug, Clone)]
+pub struct VesselConfig {
+    /// CI polling configuration
+    pub ci_poll: CiPollConfig,
+    /// Default merge method for PRs
+    pub merge_method: MergeMethod,
+    /// GitHub token for API access
+    pub github_token: String,
+}
+
+impl VesselConfig {
+    pub fn from_env() -> Self {
+        let github_token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
+            .expect("GITHUB_PERSONAL_ACCESS_TOKEN must be set");
+
+        Self {
+            ci_poll: CiPollConfig::default(),
+            merge_method: MergeMethod::default(),
+            github_token,
+        }
+    }
+}
+
+impl Default for VesselConfig {
+    fn default() -> Self {
+        Self {
+            ci_poll: CiPollConfig::default(),
+            merge_method: MergeMethod::default(),
+            github_token: String::new(),
+        }
+    }
+}
+
+/// Result of the VESSEL workflow for a single PR.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VesselOutcome {
+    /// Successfully merged and optionally deployed
+    Merged {
+        ticket_id: String,
+        pr_number: u64,
+        sha: String,
+    },
+    /// CI failed, did not merge
+    CiFailed {
+        ticket_id: Option<String>,
+        pr_number: u64,
+        reason: String,
+    },
+    /// CI passed but merge failed (conflict, etc.)
+    MergeBlocked {
+        ticket_id: Option<String>,
+        pr_number: u64,
+        reason: String,
+    },
+    /// CI polling timed out
+    CiTimeout {
+        ticket_id: Option<String>,
+        pr_number: u64,
+    },
+}
+
+impl VesselOutcome {
+    pub fn ticket_id(&self) -> Option<&str> {
+        match self {
+            VesselOutcome::Merged { ticket_id, .. } => Some(ticket_id),
+            VesselOutcome::CiFailed { ticket_id, .. } => ticket_id.as_deref(),
+            VesselOutcome::MergeBlocked { ticket_id, .. } => ticket_id.as_deref(),
+            VesselOutcome::CiTimeout { ticket_id, .. } => ticket_id.as_deref(),
+        }
+    }
+
+    pub fn pr_number(&self) -> u64 {
+        match self {
+            VesselOutcome::Merged { pr_number, .. } => *pr_number,
+            VesselOutcome::CiFailed { pr_number, .. } => *pr_number,
+            VesselOutcome::MergeBlocked { pr_number, .. } => *pr_number,
+            VesselOutcome::CiTimeout { pr_number, .. } => *pr_number,
+        }
+    }
+}

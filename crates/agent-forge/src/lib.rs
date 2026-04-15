@@ -3,8 +3,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use config::{
     state::{
-        ACTION_EMPTY, ACTION_FAILED, ACTION_PR_OPENED, KEY_COMMAND_GATE, KEY_TICKETS,
-        KEY_WORKER_SLOTS,
+        ACTION_EMPTY, ACTION_FAILED, ACTION_PR_OPENED, KEY_COMMAND_GATE, KEY_PENDING_PRS,
+        KEY_TICKETS, KEY_WORKER_SLOTS,
     },
     Ticket, TicketStatus, WorkerSlot, WorkerStatus,
 };
@@ -714,6 +714,9 @@ impl BatchNode for ForgePairNode {
         // Collect ticket status updates to apply
         let mut ticket_updates: Vec<(String, TicketStatus)> = Vec::new();
 
+        // Collect PRs for VESSEL to process
+        let mut opened_prs: Vec<Value> = Vec::new();
+
         for res_opt in &results {
             let res = match res_opt {
                 Ok(v) => v,
@@ -750,6 +753,23 @@ impl BatchNode for ForgePairNode {
                                 outcome: "pr_opened".to_string(),
                             },
                         ));
+                        
+                        // Add PR to pending_prs for VESSEL
+                        let pr_number = res["pr_number"].as_u64().unwrap_or(0);
+                        let branch = res["branch"].as_str().unwrap_or("");
+                        if pr_number > 0 {
+                            opened_prs.push(json!({
+                                "number": pr_number,
+                                "ticket_id": ticket_id,
+                                "branch": branch,
+                                "worker_id": worker_id,
+                            }));
+                            info!(
+                                pr_number,
+                                ticket_id,
+                                "Added PR to pending_prs for VESSEL"
+                            );
+                        }
                     }
                     "blocked" => {
                         let reason = res["reason"].as_str().unwrap_or("unknown");
@@ -918,6 +938,15 @@ impl BatchNode for ForgePairNode {
         store.set(KEY_WORKER_SLOTS, json!(slots)).await;
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
         store.set(KEY_TICKETS, json!(tickets)).await;
+        
+        // Update pending_prs for VESSEL to process
+        if !opened_prs.is_empty() {
+            let mut pending_prs: Vec<Value> =
+                store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
+            pending_prs.extend(opened_prs);
+            store.set(KEY_PENDING_PRS, json!(pending_prs)).await;
+            info!("Updated pending_prs for VESSEL processing");
+        }
 
         let has_suspended = slots
             .values()
