@@ -5,20 +5,15 @@
 // Ties together AnthropicClient and McpSession into a single
 // `run()` method that drives an agent to completion.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::{
-    anthropic::AnthropicClient,
     fallback::FallbackClient,
-    gemini::GeminiClient,
     mcp::McpSession,
-    openai::OpenAiClient,
     types::{AgentDecision, AgentPersona, LlmClient, LlmResponse, Message},
 };
-
-// ── AgentRunner ───────────────────────────────────────────────────────────
 
 pub struct AgentRunner {
     client: Box<dyn LlmClient>,
@@ -31,52 +26,23 @@ impl AgentRunner {
     }
 
     /// Create a runner using environment variables.
-    /// Detects provider via LLM_PROVIDER (defaults to fallback for automatic failover).
+    /// Always uses FallbackClient for automatic failover.
     pub async fn from_env() -> Result<Self> {
-        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string());
-
-        let client: Box<dyn LlmClient> = match provider.as_str() {
-            "openai" => Box::new(OpenAiClient::from_env()?),
-            "gemini" => Box::new(GeminiClient::from_env()?),
-            "anthropic" => Box::new(AnthropicClient::from_env()?),
-            "fallback" => Box::new(FallbackClient::from_env()?),
-            other => bail!(
-                "Unknown LLM_PROVIDER: {}. Valid options: anthropic, gemini, openai, fallback",
-                other
-            ),
-        };
-
-        info!(provider = %provider, model = %client.model(), "AgentRunner initialized from env");
-
-        let mcp = McpSession::connect_default().await?;
-        Ok(Self::new(client, mcp))
+        Self::from_env_for_agent(None).await
     }
 
     /// Create a runner for a specific agent, using its registry `model_backend`.
     ///
-    /// When `model_backend` is provided, it overrides `ANTHROPIC_MODEL` for the
-    /// proxy/anthropic provider so the correct model is sent to the proxy.
+    /// When `model_backend` is provided, FallbackClient routes to the correct
+    /// provider based on MODEL_PROVIDER_MAP. When PROXY_URL is set, individual
+    /// API keys are optional - the proxy handles all routing.
     pub async fn from_env_for_agent(model_backend: Option<&str>) -> Result<Self> {
-        let provider = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string());
-
-        let client: Box<dyn LlmClient> = match provider.as_str() {
-            "openai" => Box::new(OpenAiClient::from_env()?),
-            "gemini" => Box::new(GeminiClient::from_env()?),
-            "anthropic" => match model_backend {
-                Some(m) => Box::new(AnthropicClient::from_env_with_model(m)?),
-                None => Box::new(AnthropicClient::from_env()?),
-            },
-            "fallback" => match model_backend {
-                Some(m) => Box::new(FallbackClient::from_env_with_model(m)?),
-                None => Box::new(FallbackClient::from_env()?),
-            },
-            other => bail!(
-                "Unknown LLM_PROVIDER: {}. Valid options: anthropic, gemini, openai, fallback",
-                other
-            ),
+        let client: Box<dyn LlmClient> = match model_backend {
+            Some(m) => Box::new(FallbackClient::from_env_with_model(m)?),
+            None => Box::new(FallbackClient::from_env()?),
         };
 
-        info!(provider = %provider, model = %client.model(), "AgentRunner initialized for agent");
+        info!(model = %client.model(), "AgentRunner initialized");
 
         let mcp = McpSession::connect_default().await?;
         Ok(Self::new(client, mcp))
