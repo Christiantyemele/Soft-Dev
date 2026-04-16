@@ -33,7 +33,9 @@ impl WorktreeManager {
     /// # Returns
     /// Path to the created worktree.
     pub fn create_worktree(&self, pair_id: &str, ticket_id: &str) -> Result<PathBuf> {
-        let worktree_path = self.worktrees_dir.join(pair_id);
+        let worktree_path = self
+            .worktrees_dir
+            .join(format!("{}-{}", pair_id, ticket_id));
         let branch_name = Self::branch_name(pair_id, ticket_id);
 
         info!(pair_id, ticket_id, branch = %branch_name, "Creating worktree");
@@ -46,8 +48,18 @@ impl WorktreeManager {
         }
 
         if worktree_path.exists() {
-            warn!(path = %worktree_path.display(), "Worktree already exists, removing");
-            self.remove_worktree(pair_id)?;
+            if let Ok(current) = self.get_current_branch(&worktree_path) {
+                if current == branch_name {
+                    info!(
+                        path = %worktree_path.display(),
+                        branch = %branch_name,
+                        "Worktree already exists on correct branch - reusing"
+                    );
+                    return Ok(worktree_path);
+                }
+            }
+            warn!(path = %worktree_path.display(), "Worktree exists on different branch, replacing");
+            self.remove_worktree_by_path(&worktree_path, &Self::branch_name(pair_id, ticket_id))?;
         }
 
         self.prune_stale_worktrees();
@@ -102,25 +114,29 @@ impl WorktreeManager {
         Ok(worktree_path)
     }
 
-    /// Remove a worktree and its associated branch.
-    pub fn remove_worktree(&self, pair_id: &str) -> Result<()> {
-        let worktree_path = self.worktrees_dir.join(pair_id);
+    /// Remove a worktree and its associated branch by pair_id and ticket_id.
+    pub fn remove_worktree(&self, pair_id: &str, ticket_id: &str) -> Result<()> {
+        let worktree_path = self
+            .worktrees_dir
+            .join(format!("{}-{}", pair_id, ticket_id));
 
+        let branch_name = Self::branch_name(pair_id, ticket_id);
+        self.remove_worktree_by_path(&worktree_path, &branch_name)
+    }
+
+    /// Remove a worktree by its path and branch name.
+    fn remove_worktree_by_path(&self, worktree_path: &Path, branch_name: &str) -> Result<()> {
         info!(path = %worktree_path.display(), "Removing worktree");
-
-        let branch_name = self
-            .detect_worktree_branch(pair_id)
-            .unwrap_or_else(|| Self::branch_name(pair_id, "unknown"));
 
         let output = Command::new("git")
             .args(["worktree", "remove"])
-            .arg(&worktree_path)
+            .arg(worktree_path)
             .current_dir(&self.project_root)
             .output();
 
         match output {
             Ok(output) if output.status.success() => {
-                info!(pair_id, "Worktree removed successfully");
+                info!("Worktree removed successfully");
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -128,7 +144,7 @@ impl WorktreeManager {
 
                 let output = Command::new("git")
                     .args(["worktree", "remove", "--force"])
-                    .arg(&worktree_path)
+                    .arg(worktree_path)
                     .current_dir(&self.project_root)
                     .output()
                     .context("Failed to force remove worktree")?;
@@ -136,7 +152,7 @@ impl WorktreeManager {
                 if !output.status.success() {
                     warn!(path = %worktree_path.display(), "Forcing manual worktree removal");
                     if worktree_path.exists() {
-                        std::fs::remove_dir_all(&worktree_path)
+                        std::fs::remove_dir_all(worktree_path)
                             .context("Failed to manually remove worktree directory")?;
                     }
                 }
@@ -144,28 +160,27 @@ impl WorktreeManager {
             Err(e) => {
                 warn!(error = %e, "Failed to run git worktree remove");
                 if worktree_path.exists() {
-                    std::fs::remove_dir_all(&worktree_path)
+                    std::fs::remove_dir_all(worktree_path)
                         .context("Failed to manually remove worktree directory")?;
                 }
             }
         }
 
         self.prune_stale_worktrees();
-        self.delete_branch_if_exists(&branch_name);
+        self.delete_branch_if_exists(branch_name);
 
-        info!(pair_id, "Worktree removed");
+        info!("Worktree removed");
         Ok(())
     }
 
     /// Create an idle worktree on main branch.
     pub fn create_idle_worktree(&self, pair_id: &str) -> Result<PathBuf> {
-        let worktree_path = self.worktrees_dir.join(pair_id);
+        let worktree_path = self.worktrees_dir.join(format!("{}-idle", pair_id));
 
         info!(pair_id, "Creating idle worktree on main");
 
-        // Remove existing worktree if any
         if worktree_path.exists() {
-            self.remove_worktree(pair_id)?;
+            let _ = self.remove_worktree_by_path(&worktree_path, "main");
         }
 
         // Create worktrees directory if needed
@@ -347,26 +362,6 @@ impl WorktreeManager {
                 );
             }
         }
-    }
-
-    fn detect_worktree_branch(&self, pair_id: &str) -> Option<String> {
-        let worktree_path = self.worktrees_dir.join(pair_id);
-        if !worktree_path.exists() {
-            return None;
-        }
-        let output = Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&worktree_path)
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            let branch = String::from_utf8(output.stdout).ok()?.trim().to_string();
-            if branch != "HEAD" && !branch.is_empty() {
-                return Some(branch);
-            }
-        }
-        None
     }
 
     /// Generate branch name for a pair/ticket.

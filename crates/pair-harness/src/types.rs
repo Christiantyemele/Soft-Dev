@@ -202,8 +202,9 @@ pub struct StatusJson {
     #[serde(default)]
     pub pair: Option<String>,
     /// Ticket identifier - can be "ticket" or "ticket_id" in STATUS.json
-    #[serde(alias = "ticket")]
-    pub ticket_id: String,
+    /// FORGE may omit this field; we fall back to the pair's known ticket_id.
+    #[serde(alias = "ticket", default)]
+    pub ticket_id: Option<String>,
     /// PR URL (if PR_OPENED)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
@@ -336,7 +337,7 @@ mod tests {
         }"#;
 
         let status: StatusJson = serde_json::from_str(json).expect("Failed to parse");
-        assert_eq!(status.ticket_id, "T-1");
+        assert_eq!(status.ticket_id, Some("T-1".to_string()));
         assert_eq!(status.status, "IMPLEMENTATION_COMPLETE");
         match status.files_changed {
             FilesChanged::Count(n) => assert_eq!(n, 14),
@@ -354,7 +355,7 @@ mod tests {
         }"#;
 
         let status: StatusJson = serde_json::from_str(json).expect("Failed to parse");
-        assert_eq!(status.ticket_id, "T-2");
+        assert_eq!(status.ticket_id, Some("T-2".to_string()));
         match status.files_changed {
             FilesChanged::List(v) => assert_eq!(v.len(), 2),
             _ => panic!("Expected List variant, got {:?}", status.files_changed),
@@ -370,7 +371,20 @@ mod tests {
         }"#;
 
         let status: StatusJson = serde_json::from_str(json).expect("Failed to parse");
-        assert_eq!(status.ticket_id, "T-3");
+        assert_eq!(status.ticket_id, Some("T-3".to_string()));
         assert!(status.files_changed.is_empty());
+    }
+
+    #[test]
+    fn test_ticket_id_missing() {
+        let json = r#"{
+            "status": "COMPLETE",
+            "branch": "forge-1/T-005",
+            "pr_url": "https://github.com/org/repo/pull/1"
+        }"#;
+
+        let status: StatusJson = serde_json::from_str(json).expect("Failed to parse");
+        assert_eq!(status.ticket_id, None);
+        assert_eq!(status.status, "COMPLETE");
     }
 }
