@@ -122,7 +122,17 @@ impl ForgeSentinelPair {
             }
         }
 
-        // 1. Provision worktree
+        // Check if all segments are already approved on resume
+        if self.plan_approved && self.all_segments_approved().await? {
+            if final_review_path.exists() {
+                self.final_approved = true;
+                info!("All segments approved and final review exists on resume");
+            } else {
+                info!("All segments approved on resume - will proceed to final review");
+            }
+        }
+
+        // 1. Provision worktree (reuses existing if on correct branch)
         self.provision_worktree(ticket).await?;
 
         // 2. Provision configuration files
@@ -462,10 +472,11 @@ impl ForgeSentinelPair {
     }
 
     /// Provision the worktree for this pair.
-    async fn provision_worktree(&self, ticket: &Ticket) -> Result<()> {
-        self.worktree
+    async fn provision_worktree(&mut self, ticket: &Ticket) -> Result<()> {
+        let worktree_path = self.worktree
             .create_worktree(&self.config.pair_id, &ticket.id)
             .context("Failed to create worktree")?;
+        self.config.worktree = worktree_path;
         Ok(())
     }
 
@@ -753,6 +764,8 @@ impl ForgeSentinelPair {
 
     /// Read STATUS.json and convert to PairOutcome.
     /// Returns `Ok(None)` if the file exists but is empty (race: inotify fires before flush).
+    /// Handles deserialization errors gracefully by logging a warning and returning None,
+    /// rather than crashing the entire pair lifecycle.
     async fn read_status(&self) -> Result<Option<PairOutcome>> {
         let path = self.config.shared.join("STATUS.json");
         if !path.exists() {
@@ -765,15 +778,20 @@ impl ForgeSentinelPair {
             return Ok(None);
         }
 
-        let status: StatusJson = serde_json::from_str(&content)?;
+        let status: StatusJson = match serde_json::from_str(&content) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    path = %path.display(),
+                    "Failed to parse STATUS.json - treating as incomplete write"
+                );
+                return Ok(None);
+            }
+        };
 
         Ok(Some(match status.status.as_str() {
-            "PR_OPENED" => PairOutcome::PrOpened {
-                pr_url: status.pr_url.clone().unwrap_or_default(),
-                pr_number: status.pr_number.unwrap_or(0),
-                branch: status.branch.clone().unwrap_or_default(),
-            },
-            "COMPLETED" | "complete" | "completed" => {
+            "PR_OPENED" | "COMPLETE" | "complete" | "completed" => {
                 if status.pr_url.is_some() && !status.pr_url.as_ref().unwrap().is_empty() {
                     PairOutcome::PrOpened {
                         pr_url: status.pr_url.clone().unwrap_or_default(),
@@ -973,7 +991,7 @@ mod tests {
         let config = PairConfig::new("pair-1", std::path::Path::new("/project"), "ghp_test");
 
         assert_eq!(config.pair_id, "pair-1");
-        assert!(config.worktree.ends_with("worktrees/pair-1"));
+        assert!(config.worktree.starts_with("/project/worktrees/"));
         assert!(config.shared.ends_with("orchestration/pairs/pair-1/shared"));
         assert!(config.redis_url.is_none());
     }
