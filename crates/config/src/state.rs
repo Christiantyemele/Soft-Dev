@@ -1,59 +1,10 @@
 // crates/config/src/state.rs
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Ticket {
-    pub id: String,
-    pub title: String,
-    pub body: String,
-    pub priority: u32,
-    pub branch: Option<String>,
-    #[serde(default)]
-    pub status: TicketStatus,
-    #[serde(default)]
-    pub issue_url: Option<String>,
-    #[serde(default)]
-    pub attempts: u32,
-}
+// Re-export core ticket model from `ticket.rs`.
+pub use crate::ticket::{Ticket, TicketStatus};
 
-impl Ticket {
-    pub const MAX_ATTEMPTS: u32 = 3;
-
-    pub fn is_assignable(&self) -> bool {
-        match &self.status {
-            TicketStatus::Open => true,
-            TicketStatus::Failed { attempts, .. } => *attempts < Self::MAX_ATTEMPTS,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum TicketStatus {
-    #[serde(rename = "open")]
-    Open,
-    #[serde(rename = "assigned")]
-    Assigned { worker_id: String },
-    #[serde(rename = "in_progress")]
-    InProgress { worker_id: String },
-    #[serde(rename = "failed")]
-    Failed {
-        worker_id: String,
-        reason: String,
-        attempts: u32,
-    },
-    #[serde(rename = "completed")]
-    Completed { worker_id: String, outcome: String },
-    #[serde(rename = "exhausted")]
-    Exhausted { worker_id: String, attempts: u32 },
-}
-
-impl Default for TicketStatus {
-    fn default() -> Self {
-        TicketStatus::Open
-    }
-}
+// Keep serialization import available for other types in this module.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerSlot {
