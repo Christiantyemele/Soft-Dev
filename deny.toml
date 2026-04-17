@@ -1,0 +1,21 @@
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore = [
+    "RUSTSEC-2026-0097", # rand 0.8 is pinned by fred, risk is low in our context
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"

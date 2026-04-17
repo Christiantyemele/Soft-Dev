@@ -20,7 +20,7 @@ struct AnthropicRequest {
     system: Option<Value>,
     tools: Option<Vec<Value>>,
     max_tokens: Option<u32>,
-    stream: Option<bool>,
+    _stream: Option<bool>,
 }
 
 fn resolve_backend_url() -> String {
@@ -91,12 +91,15 @@ async fn main() {
     let backend_url_clone = backend_url.clone();
     let backend_key_clone = backend_key.clone();
     let app = Router::new()
-        .route("/v1/messages", post(move |headers, payload| {
-            let url = backend_url_clone.clone();
-            let key = backend_key_clone.clone();
-            let map = model_map.clone();
-            handle_messages(headers, payload, url, key, map)
-        }))
+        .route(
+            "/v1/messages",
+            post(move |headers, payload| {
+                let url = backend_url_clone.clone();
+                let key = backend_key_clone.clone();
+                let map = model_map.clone();
+                handle_messages(headers, payload, url, key, map)
+            }),
+        )
         .route("/health", axum::routing::get(|| async { "ok" }));
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
@@ -118,7 +121,8 @@ fn convert_anthropic_to_openai_messages(payload: &AnthropicRequest) -> Vec<Value
             Value::Array(arr) => {
                 let text_parts: Vec<&str> = arr.iter().filter_map(|b| b["text"].as_str()).collect();
                 if !text_parts.is_empty() {
-                    openai_messages.push(json!({ "role": "system", "content": text_parts.join("\n") }));
+                    openai_messages
+                        .push(json!({ "role": "system", "content": text_parts.join("\n") }));
                 }
             }
             _ => {
@@ -203,7 +207,9 @@ async fn handle_messages(
 ) -> (StatusCode, Json<Value>) {
     let resolved_model = {
         let map = model_map.read().await;
-        map.get(&payload.model).cloned().unwrap_or_else(|| payload.model.clone())
+        map.get(&payload.model)
+            .cloned()
+            .unwrap_or_else(|| payload.model.clone())
     };
     if resolved_model != payload.model {
         info!(requested = %payload.model, resolved = %resolved_model, "Model name mapped");
@@ -217,16 +223,19 @@ async fn handle_messages(
     let openai_messages = convert_anthropic_to_openai_messages(&payload);
 
     let openai_tools: Option<Vec<Value>> = payload.tools.clone().map(|tools| {
-        tools.into_iter().map(|t| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "parameters": t["input_schema"]
-                }
+        tools
+            .into_iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["input_schema"]
+                    }
+                })
             })
-        }).collect()
+            .collect()
     });
 
     let mut openai_payload = json!({
@@ -255,7 +264,9 @@ async fn handle_messages(
             error!(err = %e, "Backend request failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"type": "error", "error": {"type": "api_error", "message": format!("Backend request failed: {}", e)}})),
+                Json(
+                    json!({"type": "error", "error": {"type": "api_error", "message": format!("Backend request failed: {}", e)}}),
+                ),
             );
         }
     };
@@ -265,7 +276,9 @@ async fn handle_messages(
         let raw_text = resp.text().await.unwrap_or_default();
         warn!(status = %status, body = %&raw_text[..raw_text.len().min(500)], "Backend error response");
         let openai_raw: Value = serde_json::from_str(&raw_text).unwrap_or(json!({}));
-        let err_msg = openai_raw["error"]["message"].as_str().unwrap_or("unknown error");
+        let err_msg = openai_raw["error"]["message"]
+            .as_str()
+            .unwrap_or("unknown error");
         return (
             StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             Json(json!({"type": "error", "error": {"type": "api_error", "message": err_msg}})),
@@ -300,12 +313,14 @@ async fn handle_messages(
                             }
                             if let Ok(chunk) = serde_json::from_str::<Value>(data) {
                                 if response_id.is_empty() {
-                                    response_id = chunk["id"].as_str().unwrap_or("unknown").to_string();
+                                    response_id =
+                                        chunk["id"].as_str().unwrap_or("unknown").to_string();
                                 }
 
                                 if let Some(usage) = chunk.get("usage") {
                                     prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0);
-                                    completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0);
+                                    completion_tokens =
+                                        usage["completion_tokens"].as_u64().unwrap_or(0);
                                 }
 
                                 if let Some(choice) = chunk["choices"].get(0) {
@@ -319,7 +334,8 @@ async fn handle_messages(
                                         if let Some(tc_array) = delta.get("tool_calls") {
                                             if let Some(arr) = tc_array.as_array() {
                                                 for tc in arr {
-                                                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                                                    let idx =
+                                                        tc["index"].as_u64().unwrap_or(0) as usize;
                                                     while tool_calls.len() <= idx {
                                                         tool_calls.push(json!({
                                                             "id": "",
@@ -332,11 +348,21 @@ async fn handle_messages(
                                                     }
                                                     if let Some(func) = tc.get("function") {
                                                         if let Some(name) = func["name"].as_str() {
-                                                            tool_calls[idx]["function"]["name"] = json!(name);
+                                                            tool_calls[idx]["function"]["name"] =
+                                                                json!(name);
                                                         }
-                                                        if let Some(args) = func["arguments"].as_str() {
-                                                            let existing = tool_calls[idx]["function"]["arguments"].as_str().unwrap_or("");
-                                                            tool_calls[idx]["function"]["arguments"] = json!(format!("{}{}", existing, args));
+                                                        if let Some(args) =
+                                                            func["arguments"].as_str()
+                                                        {
+                                                            let existing = tool_calls[idx]
+                                                                ["function"]["arguments"]
+                                                                .as_str()
+                                                                .unwrap_or("");
+                                                            tool_calls[idx]["function"]
+                                                                ["arguments"] = json!(format!(
+                                                                "{}{}",
+                                                                existing, args
+                                                            ));
                                                         }
                                                     }
                                                 }
