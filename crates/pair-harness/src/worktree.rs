@@ -38,52 +38,228 @@ impl WorktreeManager {
 
         info!(pair_id, ticket_id, branch = %branch_name, "Creating worktree");
 
+        // Update remote refs for origin/main (best-effort)
         if let Err(e) = self.run_git_in_main(&["fetch", "origin", "main"]) {
             warn!(error = %e, "git fetch origin/main failed, continuing");
         }
-        if let Err(e) = self.run_git_in_main(&["merge", "origin/main"]) {
-            warn!(error = %e, "git merge origin/main failed, continuing");
-        }
 
-        if worktree_path.exists() {
-            warn!(path = %worktree_path.display(), "Worktree already exists, removing");
-            self.remove_worktree(pair_id)?;
-        }
-
+        // Keep stale worktree pruning but DO NOT delete existing branches by default.
         self.prune_stale_worktrees();
-        self.delete_branch_if_exists(&branch_name);
+
+        // Acquire a per-pair filesystem lock to avoid concurrent creation/reuse races.
+        let lock_path = self.worktrees_dir.join(format!("{}.lock", pair_id));
+        struct LockGuard(PathBuf);
+        impl Drop for LockGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let mut lock_acquired = false;
+        let mut attempts = 0u8;
+        while attempts < 50 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(_) => {
+                    lock_acquired = true;
+                    break;
+                }
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    attempts = attempts.saturating_add(1);
+                }
+            }
+        }
+
+        if !lock_acquired {
+            return Err(anyhow!("Failed to acquire worktree lock for {} after retries", pair_id));
+        }
+        let _lock_guard = LockGuard(lock_path.clone());
 
         std::fs::create_dir_all(&self.worktrees_dir)
             .context("Failed to create worktrees directory")?;
 
-        let output = Command::new("git")
-            .args(["worktree", "add"])
-            .arg(&worktree_path)
-            .args(["-b", &branch_name])
-            .current_dir(&self.project_root)
-            .output()
-            .context("Failed to run git worktree add")?;
+        if worktree_path.exists() {
+            info!(path = %worktree_path.display(), "Worktree already exists, reusing");
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("already exists") {
-                info!(branch = %branch_name, "Branch exists, creating worktree from existing branch");
+            // If there are uncommitted changes in the worktree, stash them and keep the stash.
+            let status = Command::new("git")
+                .args(["status", "--porcelain"])
+                .current_dir(&worktree_path)
+                .output()
+                .context("Failed to run git status")?;
+
+            if !status.stdout.is_empty() {
+                info!(path = %worktree_path.display(), "Stashing local changes before switching branches");
+                let stash_msg = format!("autostash: reuse for ticket {}", ticket_id);
                 let output = Command::new("git")
-                    .args(["worktree", "add"])
-                    .arg(&worktree_path)
-                    .arg(&branch_name)
+                    .args(["stash", "push", "-u", "-m"])
+                    .arg(&stash_msg)
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to run git stash")?;
+
+                if !output.status.success() {
+                    warn!(path = %worktree_path.display(), error = %String::from_utf8_lossy(&output.stderr), "git stash failed");
+                }
+            }
+
+            // Ensure the worktree has recent refs from origin.
+            let fetch_out = Command::new("git")
+                .args(["fetch", "origin"])
+                .current_dir(&worktree_path)
+                .output()
+                .context("Failed to fetch origin in existing worktree")?;
+
+            if !fetch_out.status.success() {
+                warn!(path = %worktree_path.display(), stderr = %String::from_utf8_lossy(&fetch_out.stderr), "git fetch origin in worktree failed");
+            }
+
+            // Try to ensure local 'main' branch matches origin/main. If local main exists, checkout and pull.
+            // Otherwise, create/update local main from origin/main so we have a stable base to branch from.
+            let rev_out = Command::new("git")
+                .args(["rev-parse", "--verify", "main"])
+                .current_dir(&worktree_path)
+                .output()
+                .context("Failed to check for local main branch")?;
+
+            if rev_out.status.success() {
+                let checkout_out = Command::new("git")
+                    .args(["checkout", "main"])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to checkout local main in worktree")?;
+
+                if !checkout_out.status.success() {
+                    warn!(path = %worktree_path.display(), stderr = %String::from_utf8_lossy(&checkout_out.stderr), "git checkout main failed");
+                } else {
+                    let pull_out = Command::new("git")
+                        .args(["pull", "--rebase", "origin", "main"])
+                        .current_dir(&worktree_path)
+                        .output()
+                        .context("Failed to pull main in worktree")?;
+
+                    if !pull_out.status.success() {
+                        warn!(path = %worktree_path.display(), stderr = %String::from_utf8_lossy(&pull_out.stderr), "git pull origin/main failed in worktree");
+                    }
+                }
+            } else {
+                let checkout_out = Command::new("git")
+                    .args(["checkout", "-B", "main", "origin/main"])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to create/update local main from origin/main in worktree")?;
+
+                if !checkout_out.status.success() {
+                    warn!(path = %worktree_path.display(), stderr = %String::from_utf8_lossy(&checkout_out.stderr), "git checkout -B main origin/main failed in worktree");
+                }
+            }
+
+            // Decide whether to reuse an existing branch (local or remote) or create a new one from origin/main.
+            let branch_exists_local = {
+                let output = Command::new("git")
+                    .args(["branch", "--list", &branch_name])
                     .current_dir(&self.project_root)
                     .output()
-                    .context("Failed to run git worktree add from existing branch")?;
+                    .context("Failed to check local branch existence")?;
+
+                !output.stdout.is_empty()
+            };
+
+            let branch_exists_remote = if !branch_exists_local {
+                let output = Command::new("git")
+                    .args(["ls-remote", "--heads", "origin", &branch_name])
+                    .current_dir(&self.project_root)
+                    .output()
+                    .context("Failed to check remote branch existence")?;
+
+                !output.stdout.is_empty()
+            } else {
+                false
+            };
+
+            if branch_exists_local {
+                // Checkout existing local branch in the worktree
+                let output = Command::new("git")
+                    .args(["checkout", &branch_name])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to checkout existing branch in worktree")?;
 
                 if !output.status.success() {
                     return Err(anyhow!(
-                        "Failed to create worktree from existing branch: {}",
+                        "Failed to checkout branch {}: {}",
+                        branch_name,
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+            } else if branch_exists_remote {
+                // Create local tracking branch from origin/<branch> and check it out in the existing worktree
+                let origin_ref = format!("origin/{}", branch_name);
+                let output = Command::new("git")
+                    .args(["checkout", "-B", &branch_name, &origin_ref])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to create local branch from origin/<branch> in worktree")?;
+
+                if !output.status.success() {
+                    return Err(anyhow!(
+                        "Failed to create local branch {} from {}: {}",
+                        branch_name,
+                        origin_ref,
                         String::from_utf8_lossy(&output.stderr)
                     ));
                 }
             } else {
-                return Err(anyhow!("Failed to create worktree: {}", stderr));
+                // Create new branch from origin/main and check it out in the existing worktree
+                let output = Command::new("git")
+                    .args(["checkout", "-b", &branch_name, "origin/main"])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to create branch from origin/main")?;
+
+                if !output.status.success() {
+                    return Err(anyhow!(
+                        "Failed to create branch {} from origin/main: {}",
+                        branch_name,
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+            }
+        } else {
+            // Worktree doesn't exist yet: create it from origin/main
+            let output = Command::new("git")
+                .args(["worktree", "add"])
+                .arg(&worktree_path)
+                .args(["-b", &branch_name])
+                .current_dir(&self.project_root)
+                .output()
+                .context("Failed to run git worktree add")?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("already exists") {
+                    info!(branch = %branch_name, "Branch exists, creating worktree from existing branch");
+                    let output = Command::new("git")
+                        .args(["worktree", "add"])
+                        .arg(&worktree_path)
+                        .arg(&branch_name)
+                        .current_dir(&self.project_root)
+                        .output()
+                        .context("Failed to run git worktree add from existing branch")?;
+
+                    if !output.status.success() {
+                        return Err(anyhow!(
+                            "Failed to create worktree from existing branch: {}",
+                            String::from_utf8_lossy(&output.stderr)
+                        ));
+                    }
+                } else {
+                    return Err(anyhow!("Failed to create worktree: {}", stderr));
+                }
             }
         }
 
@@ -94,7 +270,7 @@ impl WorktreeManager {
             .output()
             .context("Failed to run git status")?;
 
-        if !status.stdout.is_empty() {
+        if !status.status.success() || !status.stdout.is_empty() {
             warn!(path = %worktree_path.display(), "Worktree is not clean");
         }
 
@@ -151,7 +327,16 @@ impl WorktreeManager {
         }
 
         self.prune_stale_worktrees();
-        self.delete_branch_if_exists(&branch_name);
+
+        // By default preserve branches so history/audit is retained. Set
+        // PAIR_HARNESS_PRUNE_BRANCHES=true to enable automatic branch deletion.
+        let prune_branches = std::env::var("PAIR_HARNESS_PRUNE_BRANCHES")
+            .unwrap_or_else(|_| "false".to_string()) == "true";
+        if prune_branches {
+            self.delete_branch_if_exists(&branch_name);
+        } else {
+            info!(branch = %branch_name, "Preserving branch by default (set PAIR_HARNESS_PRUNE_BRANCHES=true to delete)");
+        }
 
         info!(pair_id, "Worktree removed");
         Ok(())
@@ -163,9 +348,21 @@ impl WorktreeManager {
 
         info!(pair_id, "Creating idle worktree on main");
 
-        // Remove existing worktree if any
+        // If worktree exists, update it to origin/main instead of removing it.
         if worktree_path.exists() {
-            self.remove_worktree(pair_id)?;
+            info!(path = %worktree_path.display(), "Idle worktree exists, updating to origin/main");
+            if let Err(e) = self.run_git_in_main(&["fetch", "origin", "main"]) {
+                warn!(error = %e, "git fetch origin/main failed, continuing");
+            }
+            let output = Command::new("git")
+                .args(["checkout", "-B", "main", "origin/main"])
+                .current_dir(&worktree_path)
+                .output()
+                .context("Failed to update existing worktree to origin/main")?;
+
+            if !output.status.success() {
+                warn!(path = %worktree_path.display(), stderr = %String::from_utf8_lossy(&output.stderr), "Failed to checkout/update main in existing idle worktree");
+            }
         }
 
         // Create worktrees directory if needed
@@ -371,8 +568,8 @@ impl WorktreeManager {
 
     /// Generate branch name for a pair/ticket.
     pub fn branch_name(pair_id: &str, ticket_id: &str) -> String {
-        // Handle both "forge-1" and "pair-1" style pair IDs
-        if pair_id.starts_with("forge-") || pair_id.starts_with("pair-") {
+        // Canonicalize branch names: prefer explicit `forge-` prefix.
+        if pair_id.starts_with("forge-") {
             format!("{}/{}", pair_id, ticket_id)
         } else {
             format!("forge-{}/{}", pair_id, ticket_id)
