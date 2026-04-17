@@ -2,13 +2,13 @@
 name    = "pocketflow-core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 tokio       = { workspace = true }
 async-trait = { workspace = true }
 futures     = { workspace = true }
 anyhow      = { workspace = true }
-thiserror   = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 fred        = { workspace = true }

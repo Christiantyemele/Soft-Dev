@@ -71,8 +71,8 @@ impl FallbackClient {
         let mut fallback_order =
             std::env::var("LLM_FALLBACK").unwrap_or_else(|_| "anthropic,gemini,openai".to_string());
 
-        let proxy_active = std::env::var("PROXY_URL").is_ok()
-            || std::env::var("ANTHROPIC_BASE_URL").is_ok();
+        let proxy_active =
+            std::env::var("PROXY_URL").is_ok() || std::env::var("ANTHROPIC_BASE_URL").is_ok();
 
         if proxy_active && !fallback_order.contains("proxy") {
             fallback_order = format!("proxy,{}", fallback_order);
@@ -82,7 +82,7 @@ impl FallbackClient {
         // specific provider type, prepend that provider so it's tried first.
         // This ensures models like "glm5" are routed through OpenAiClient
         // (which sends OpenAI-format requests) instead of AnthropicClient.
-        let mapped_provider = model_override.and_then(|m| resolve_provider_for_model(m));
+        let mapped_provider = model_override.and_then(resolve_provider_for_model);
         if let Some(ref provider) = mapped_provider {
             let provider_entry = if proxy_active {
                 format!("{}-proxy", provider)
@@ -131,7 +131,8 @@ impl FallbackClient {
                     }
                 }
                 "openai-proxy" => {
-                    let default_model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                    let default_model =
+                        std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
                     let model = model_override.unwrap_or(&default_model);
                     match OpenAiClient::from_proxy(model) {
                         Ok(c) => {
@@ -146,7 +147,10 @@ impl FallbackClient {
                 }
                 "anthropic" => {
                     if proxy_active {
-                        info!(provider = name, "Skipping direct anthropic — proxy is active");
+                        info!(
+                            provider = name,
+                            "Skipping direct anthropic — proxy is active"
+                        );
                         continue;
                     }
                     let result = match model_override {
@@ -276,8 +280,6 @@ impl LlmClient for FallbackClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_fallback_order_parsing() {
         std::env::set_var("LLM_FALLBACK", "gemini,anthropic");

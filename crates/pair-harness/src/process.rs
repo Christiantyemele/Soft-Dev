@@ -2,12 +2,11 @@
 //! Process management for FORGE and SENTINEL agents.
 
 use anyhow::{anyhow, Context, Result};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+use tokio::process::{Child, Command};
 use tracing::{debug, error, info, warn};
 
 #[cfg(unix)]
@@ -152,7 +151,12 @@ impl ProcessManager {
         }
     }
 
-    fn inject_proxy_env(cmd: &mut Command, routing_key: &str, proxy_url: &str, proxy_api_key: Option<&str>) {
+    fn inject_proxy_env(
+        cmd: &mut Command,
+        routing_key: &str,
+        proxy_url: &str,
+        proxy_api_key: Option<&str>,
+    ) {
         let base_url = proxy_url.trim_end_matches("/v1").trim_end_matches('/');
         cmd.env("ANTHROPIC_BASE_URL", base_url);
         if let Some(api_key) = proxy_api_key {
@@ -163,14 +167,38 @@ impl ProcessManager {
     }
 
     fn inject_llm_env(cmd: &mut Command) {
-        cmd.env("LLM_PROVIDER", std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()));
-        cmd.env("LLM_FALLBACK", std::env::var("LLM_FALLBACK").unwrap_or_default());
-        cmd.env("MODEL_PROVIDER_MAP", std::env::var("MODEL_PROVIDER_MAP").unwrap_or_default());
-        cmd.env("ANTHROPIC_MODEL", std::env::var("ANTHROPIC_MODEL").unwrap_or_default());
-        cmd.env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap_or_default());
-        cmd.env("OPENAI_MODEL", std::env::var("OPENAI_MODEL").unwrap_or_default());
-        cmd.env("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").unwrap_or_default());
-        cmd.env("GEMINI_MODEL", std::env::var("GEMINI_MODEL").unwrap_or_default());
+        cmd.env(
+            "LLM_PROVIDER",
+            std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "fallback".to_string()),
+        );
+        cmd.env(
+            "LLM_FALLBACK",
+            std::env::var("LLM_FALLBACK").unwrap_or_default(),
+        );
+        cmd.env(
+            "MODEL_PROVIDER_MAP",
+            std::env::var("MODEL_PROVIDER_MAP").unwrap_or_default(),
+        );
+        cmd.env(
+            "ANTHROPIC_MODEL",
+            std::env::var("ANTHROPIC_MODEL").unwrap_or_default(),
+        );
+        cmd.env(
+            "OPENAI_API_KEY",
+            std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        );
+        cmd.env(
+            "OPENAI_MODEL",
+            std::env::var("OPENAI_MODEL").unwrap_or_default(),
+        );
+        cmd.env(
+            "GEMINI_API_KEY",
+            std::env::var("GEMINI_API_KEY").unwrap_or_default(),
+        );
+        cmd.env(
+            "GEMINI_MODEL",
+            std::env::var("GEMINI_MODEL").unwrap_or_default(),
+        );
     }
 
     pub fn proxy_url(&self) -> Option<&str> {
@@ -219,9 +247,17 @@ impl ProcessManager {
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
         if let Some(proxy_url) = &self.proxy_url {
-            Self::inject_proxy_env(&mut cmd, "forge-key", proxy_url, self.proxy_api_key.as_deref());
+            Self::inject_proxy_env(
+                &mut cmd,
+                "forge-key",
+                proxy_url,
+                self.proxy_api_key.as_deref(),
+            );
         } else {
-            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            cmd.env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            );
             Self::inject_llm_env(&mut cmd);
         }
 
@@ -332,9 +368,17 @@ impl ProcessManager {
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
         if let Some(proxy_url) = &self.proxy_url {
-            Self::inject_proxy_env(&mut cmd, "forge-key", proxy_url, self.proxy_api_key.as_deref());
+            Self::inject_proxy_env(
+                &mut cmd,
+                "forge-key",
+                proxy_url,
+                self.proxy_api_key.as_deref(),
+            );
         } else {
-            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            cmd.env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            );
             Self::inject_llm_env(&mut cmd);
         }
 
@@ -353,7 +397,9 @@ impl ProcessManager {
             );
         }
 
-        let mut child = cmd.spawn().context("Failed to spawn FORGE process (PR mode)")?;
+        let mut child = cmd
+            .spawn()
+            .context("Failed to spawn FORGE process (PR mode)")?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
@@ -435,9 +481,17 @@ impl ProcessManager {
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
         if let Some(proxy_url) = &self.proxy_url {
-            Self::inject_proxy_env(&mut cmd, "sentinel-key", proxy_url, self.proxy_api_key.as_deref());
+            Self::inject_proxy_env(
+                &mut cmd,
+                "sentinel-key",
+                proxy_url,
+                self.proxy_api_key.as_deref(),
+            );
         } else {
-            cmd.env("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+            cmd.env(
+                "ANTHROPIC_API_KEY",
+                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            );
             Self::inject_llm_env(&mut cmd);
         }
 
@@ -929,18 +983,14 @@ impl ForgeProcessBuilder {
             (Some(redis_url), Some(proxy_url)) => {
                 ProcessManager::with_proxy(self.github_token, Some(redis_url.clone()), proxy_url)
             }
-            (Some(redis_url), None) => {
-                ProcessManager::with_redis(self.github_token, redis_url)
-            }
+            (Some(redis_url), None) => ProcessManager::with_redis(self.github_token, redis_url),
             (None, Some(proxy_url)) => {
                 ProcessManager::with_proxy(self.github_token, None, proxy_url)
             }
-            (None, None) => {
-                ProcessManager::new(self.github_token)
-            }
+            (None, None) => ProcessManager::new(self.github_token),
         };
 
-        let mut child = manager
+        let child = manager
             .spawn_forge(&self.pair_id, &self.ticket_id, &self.worktree, &self.shared)
             .await?;
 
@@ -983,8 +1033,8 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::SegmentEval(3));
 
-        assert!(prompt.contains("Read acceptance criteria from /tmp/shared/CONTRACT.md"));
-        assert!(prompt.contains("Write your evaluation to /tmp/shared/segment-3-eval.md"));
+        assert!(prompt.contains("--- CONTRACT.md ---"));
+        assert!(prompt.contains("Write /tmp/shared/segment-3-eval.md"));
     }
 
     #[test]
@@ -993,7 +1043,7 @@ mod tests {
         let prompt =
             manager.build_sentinel_prompt(Path::new("/tmp/shared"), &SentinelMode::FinalReview);
 
-        assert!(prompt.contains("Read segment evaluations from /tmp/shared/segment-*-eval.md"));
-        assert!(prompt.contains("Write your verdict to /tmp/shared/final-review.md"));
+        assert!(prompt.contains("--- CONTRACT.md ---"));
+        assert!(prompt.contains("Write /tmp/shared/final-review.md"));
     }
 }

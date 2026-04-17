@@ -44,7 +44,8 @@ impl OpenAiClient {
     pub fn from_env() -> Result<Self> {
         let key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY not set")?;
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-        let api_url = std::env::var("OPENAI_API_URL").unwrap_or_else(|_| DEFAULT_OPENAI_API_URL.to_string());
+        let api_url =
+            std::env::var("OPENAI_API_URL").unwrap_or_else(|_| DEFAULT_OPENAI_API_URL.to_string());
         Ok(Self {
             http: Client::new(),
             api_url,
@@ -69,10 +70,7 @@ impl OpenAiClient {
         let proxy_url = std::env::var("PROXY_URL")
             .or_else(|_| std::env::var("ANTHROPIC_BASE_URL"))
             .context("PROXY_URL not set — required for OpenAI-compatible proxy routing")?;
-        let api_url = format!(
-            "{}/chat/completions",
-            proxy_url.trim_end_matches('/')
-        );
+        let api_url = format!("{}/chat/completions", proxy_url.trim_end_matches('/'));
         let api_key = std::env::var("PROXY_API_KEY")
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
             .context("PROXY_API_KEY or OPENAI_API_KEY not set for proxy")?;
@@ -120,7 +118,7 @@ fn messages_to_json(messages: &[Message]) -> Value {
                     match block {
                         ContentBlock::Text { text } => {
                             if !text_content.is_empty() {
-                                text_content.push_str("\n");
+                                text_content.push('\n');
                             }
                             text_content.push_str(text);
                         }
@@ -207,11 +205,17 @@ impl LlmClient for OpenAiClient {
             .context("HTTP request to OpenAI API failed")?;
 
         let status = resp.status();
-        let raw_text = resp.text().await.context("Failed to read OpenAI response body")?;
+        let raw_text = resp
+            .text()
+            .await
+            .context("Failed to read OpenAI response body")?;
         debug!(model = %self.model, status = %status, body = %raw_text, "← OpenAI raw response");
 
-        let raw: Value = serde_json::from_str(&raw_text)
-            .context(format!("Failed to parse OpenAI response (status={}, body={})", status, &raw_text[..raw_text.len().min(500)]))?;
+        let raw: Value = serde_json::from_str(&raw_text).context(format!(
+            "Failed to parse OpenAI response (status={}, body={})",
+            status,
+            &raw_text[..raw_text.len().min(500)]
+        ))?;
 
         if !status.is_success() {
             let error_msg = raw["error"]["message"].as_str().unwrap_or("unknown");
@@ -226,7 +230,7 @@ impl LlmClient for OpenAiClient {
         let message = &choice["message"];
 
         if let Some(tool_calls) = message["tool_calls"].as_array() {
-            if let Some(tool_call) = tool_calls.get(0) {
+            if let Some(tool_call) = tool_calls.first() {
                 let id = tool_call["id"].as_str().unwrap_or("").to_string();
                 let name = tool_call["function"]["name"]
                     .as_str()
