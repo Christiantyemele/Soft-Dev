@@ -265,6 +265,11 @@ impl BatchNode for ForgeNode {
         let mut all_success = true;
         let worktree_mgr = WorktreeManager::new(&self.workspace_root);
 
+        // Preserve worktrees between tasks by default to enable faster reuse and retain history.
+        // Set AGENT_FORGE_PRESERVE_WORKTREES=false to restore previous behavior.
+        let preserve_worktrees = std::env::var("AGENT_FORGE_PRESERVE_WORKTREES")
+            .unwrap_or_else(|_| "true".to_string()) == "true";
+
         let mut ticket_updates: Vec<(String, TicketStatus)> = Vec::new();
 
         for res_opt in &results {
@@ -300,10 +305,14 @@ impl BatchNode for ForgeNode {
                                 outcome: outcome.to_string(),
                             },
                         ));
-                        if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
-                            warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
+                        if !preserve_worktrees {
+                            if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
+                                warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
+                            } else {
+                                info!(worker = worker_id, "Worktree cleaned up");
+                            }
                         } else {
-                            info!(worker = worker_id, "Worktree cleaned up");
+                            info!(worker = worker_id, "Preserving worktree for reuse");
                         }
                     }
                     "suspended" | "blocked" => {
@@ -355,10 +364,14 @@ impl BatchNode for ForgeNode {
                                 },
                             ));
                         }
-                        if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
-                            warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
+                        if !preserve_worktrees {
+                            if let Err(e) = worktree_mgr.remove_worktree(worker_id) {
+                                warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
+                            } else {
+                                info!(worker = worker_id, "Worktree cleaned up");
+                            }
                         } else {
-                            info!(worker = worker_id, "Worktree cleaned up");
+                            info!(worker = worker_id, "Preserving worktree for reuse");
                         }
                     }
                 }
