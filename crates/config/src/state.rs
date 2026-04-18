@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub use crate::ticket::{Ticket, TicketStatus};
 
 // Keep serialization import available for other types in this module.
+// Re-export core ticket model from `ticket.rs`.
+pub use crate::ticket::{Ticket, TicketStatus};
 
     pub fn is_assignable(&self) -> bool {
         match &self.status {
@@ -36,6 +38,8 @@ pub enum TicketStatus {
     #[serde(rename = "exhausted")]
     Exhausted { worker_id: String, attempts: u32 },
 }
+
+// Keep serialization import available for other types in this module.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerSlot {
