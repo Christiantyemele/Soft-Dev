@@ -1112,6 +1112,10 @@ impl ForgeSentinelPair {
                 reason: "Fuel exhausted".to_string(),
                 reset_count: status.context_resets,
             },
+            "PENDING_REVIEW" => {
+                debug!(status = "PENDING_REVIEW", "FORGE requests review — treating as non-terminal, continuing event loop");
+                return Ok(None);
+            }
             _ => {
                 let s = status.status.as_str();
                 if s.starts_with("SEGMENT_") && s.ends_with("_DONE") {

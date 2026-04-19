@@ -82,6 +82,7 @@ The FORGE-SENTINEL pair runs an event-driven lifecycle:
 |---|---|---|
 | `PR_OPENED`, `COMPLETE`, `complete`, `completed`, `COMPLETED`, `SEGMENTS_COMPLETE`, `SEGMENT_COMPLETE_AWAITING_REVIEW` | PrOpened (if pr_url present) or Blocked | -> VESSEL or -> NEXUS |
 | `IMPLEMENTATION_COMPLETE` | Blocked ("needs push/PR creation") | -> NEXUS (forge attempts auto-push) |
+| `PENDING_REVIEW` | Non-terminal — FORGE requests SENTINEL review, harness continues event loop | Continue watching |
 | `BLOCKED` | Blocked | -> NEXUS (suspended) |
 | `FUEL_EXHAUSTED` | FuelExhausted | -> NEXUS (failed, possibly retryable) |
 | `SEGMENT_N_DONE` (intermediate) | Non-terminal — harness continues event loop | Continue watching |
