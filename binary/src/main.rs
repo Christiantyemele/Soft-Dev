@@ -3,7 +3,7 @@ mod nodes;
 mod state;
 
 use anyhow::Result;
-use pocketflow_core::{Flow, SharedStore};
+use pocketflow_core::{Action, Flow, SharedStore};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
@@ -128,6 +128,7 @@ async fn main() -> Result<()> {
                 (ACTION_PR_OPENED, "vessel"),
                 (ACTION_FAILED, "nexus"),
                 (ACTION_EMPTY, "nexus"),
+                (Action::NO_TICKETS, "nexus"),
                 ("suspended", "nexus"),
             ],
         )

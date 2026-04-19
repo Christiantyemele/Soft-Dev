@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
 use crate::ci_poller::CiPollResult;
-use crate::conflict_resolver::{ConflictResolution, ConflictResolver};
+use crate::conflict_resolver::ConflictResolver;
 use crate::types::{VesselConfig, VesselOutcome};
 use crate::{CiPoller, PrMerger, VesselNotifier};
 
@@ -31,12 +31,14 @@ pub struct VesselNode {
     client: github::GithubRestClient,
     poller: CiPoller,
     merger: PrMerger,
-    conflict_resolver: ConflictResolver,
 }
 
 /// Environment variable for the workspace root directory.
 /// Used to locate worktrees for local conflict resolution.
 const ENV_WORKSPACE_ROOT: &str = "AGENTFLOW_WORKSPACE_ROOT";
+
+/// Maximum number of conflict resolution attempts before giving up.
+const MAX_CONFLICT_RESOLUTION_ATTEMPTS: u32 = 3;
 
 impl VesselNode {
     pub fn new(config: VesselConfig) -> Self {
@@ -45,7 +47,6 @@ impl VesselNode {
         Self {
             poller: CiPoller::new(config.ci_poll.clone(), client.clone()),
             merger: PrMerger::new(client.clone(), config.merge_method),
-            conflict_resolver: ConflictResolver::new(client.clone()),
             client,
             _config: config,
         }
@@ -133,11 +134,6 @@ impl Node for VesselNode {
                 continue;
             }
 
-            if pr["conflict_status"].as_str() == Some("awaiting_rework") {
-                debug!(pr_number, "Skipping PR awaiting rework — conflict resolution in progress");
-                continue;
-            }
-
             debug!(pr_number, "Fetching PR details");
             
             let pr_info = match self.client.get_pull_request(owner, repo, pr_number).await {
@@ -179,6 +175,7 @@ impl Node for VesselNode {
         let mut any_success = false;
         let mut any_failure = false;
         let mut any_conflicts = false;
+        let mut failed_ticket_ids: Vec<String> = Vec::new();
 
         for outcome in outcomes {
             match &outcome {
@@ -198,21 +195,30 @@ impl Node for VesselNode {
                 VesselOutcome::CiFailed { ticket_id, pr_number, reason } => {
                     VesselNotifier::emit_ci_failed(store, ticket_id.as_deref(), *pr_number, reason).await;
                     let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
-                    self.mark_ticket_failed(store, &tid, &format!("CI failed for PR #{}", pr_number)).await;
+                    if !failed_ticket_ids.contains(&tid) {
+                        self.mark_ticket_failed(store, &tid, &format!("CI failed for PR #{}", pr_number)).await;
+                        failed_ticket_ids.push(tid);
+                    }
                     self.remove_from_pending_prs(store, *pr_number).await;
                     any_failure = true;
                 }
                 VesselOutcome::MergeBlocked { ticket_id, pr_number, reason } => {
                     VesselNotifier::emit_merge_blocked(store, ticket_id.as_deref(), *pr_number, reason).await;
                     let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
-                    self.mark_ticket_failed(store, &tid, &format!("Merge blocked for PR #{}: {}", pr_number, reason)).await;
+                    if !failed_ticket_ids.contains(&tid) {
+                        self.mark_ticket_failed(store, &tid, &format!("Merge blocked for PR #{}: {}", pr_number, reason)).await;
+                        failed_ticket_ids.push(tid);
+                    }
                     self.remove_from_pending_prs(store, *pr_number).await;
                     any_failure = true;
                 }
                 VesselOutcome::CiTimeout { ticket_id, pr_number } => {
                     VesselNotifier::emit_ci_timeout(store, ticket_id.as_deref(), *pr_number).await;
                     let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
-                    self.mark_ticket_failed(store, &tid, &format!("CI timed out for PR #{}", pr_number)).await;
+                    if !failed_ticket_ids.contains(&tid) {
+                        self.mark_ticket_failed(store, &tid, &format!("CI timed out for PR #{}", pr_number)).await;
+                        failed_ticket_ids.push(tid);
+                    }
                     self.remove_from_pending_prs(store, *pr_number).await;
                     any_failure = true;
                 }
@@ -232,16 +238,75 @@ impl Node for VesselNode {
                     any_success = true;
                 }
                 VesselOutcome::Conflicts { ticket_id, pr_number, conflicted_files } => {
+                    let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
+
+                    let current_attempts = self.get_conflict_resolution_attempts(store, *pr_number).await;
+
+                    if current_attempts >= MAX_CONFLICT_RESOLUTION_ATTEMPTS {
+                        warn!(
+                            pr_number,
+                            ticket_id = %tid,
+                            attempts = current_attempts,
+                            "Max conflict resolution attempts exceeded — marking ticket as failed"
+                        );
+                        VesselNotifier::emit_conflicts_detected(
+                            store,
+                            ticket_id.as_deref(),
+                            *pr_number,
+                            conflicted_files,
+                        ).await;
+                        self.mark_ticket_failed(
+                            store,
+                            &tid,
+                            &format!(
+                                "Merge conflicts on PR #{} not resolved after {} attempts",
+                                pr_number, current_attempts
+                            ),
+                        ).await;
+                        self.remove_from_pending_prs(store, *pr_number).await;
+                        any_failure = true;
+                        continue;
+                    }
+
                     VesselNotifier::emit_conflicts_detected(
                         store,
                         ticket_id.as_deref(),
                         *pr_number,
                         conflicted_files,
                     ).await;
-                    let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
-                    self.mark_ticket_failed(store, &tid, &format!("Merge conflicts for PR #{}", pr_number)).await;
-                    self.mark_pr_awaiting_rework(store, *pr_number).await;
-                    any_conflicts = true;
+
+                    let worker_id = pending_prs
+                        .iter()
+                        .find(|p| p["number"].as_u64() == Some(*pr_number))
+                        .and_then(|pr| {
+                            let wid = pr["worker_id"].as_str().unwrap_or("");
+                            if !wid.is_empty() {
+                                return Some(wid.to_string());
+                            }
+                            Self::derive_worker_id_from_branch(pr["head_branch"].as_str().unwrap_or(""))
+                        });
+
+                    let worker_reassigned = if let Some(ref wid) = worker_id {
+                        self.assign_worker_for_conflict_rework(store, wid, &tid).await;
+                        true
+                    } else {
+                        false
+                    };
+
+                    self.remove_from_pending_prs(store, *pr_number).await;
+
+                    if worker_reassigned {
+                        self.increment_conflict_resolution_attempts(store, *pr_number).await;
+                        any_conflicts = true;
+                    } else {
+                        warn!(
+                            pr_number,
+                            ticket_id = %tid,
+                            "No worker available for conflict rework — marking ticket as failed"
+                        );
+                        self.mark_ticket_failed(store, &tid, &format!("Merge conflicts on PR #{} — no worker available for rework", pr_number)).await;
+                        any_failure = true;
+                    }
                 }
             }
         }
@@ -318,9 +383,6 @@ impl VesselNode {
         }
     }
 
-    /// Handle merge conflicts: attempt auto-resolution via GitHub API or local rebase.
-    /// If resolution succeeds, re-poll CI for the updated branch.
-    /// If resolution fails, return Conflicts outcome for nexus to reassign.
     async fn handle_conflicts(
         &self,
         owner: &str,
@@ -331,90 +393,214 @@ impl VesselNode {
         let pr_number = pr_info.number;
         let worktree_path = self.resolve_worktree_path(&pr_info);
 
-        if worktree_path.is_none() {
-            info!(pr_number, "No local worktree found — attempting GitHub update-branch only");
-        } else {
+        let conflicted_files = match &worktree_path {
+            Some(wt) => {
+                self.merge_origin_main_in_worktree(wt, &pr_info.head_branch).await
+            }
+            None => {
+                warn!(pr_number, "No worktree path — cannot merge origin/main locally");
+                self.fetch_conflicted_files_from_github(owner, repo, &pr_info).await
+            }
+        };
+
+        if let Some(ref wt) = worktree_path {
+            let _ = ConflictResolver::abort_rebase(wt).await;
+        }
+
+        let resolution_md_written = self.write_conflict_resolution_md(&pr_info, &conflicted_files).await;
+
+        if resolution_md_written {
             info!(
                 pr_number,
-                path = ?worktree_path,
-                "Worktree found — attempting full conflict resolution"
+                files = conflicted_files.len(),
+                "Wrote CONFLICT_RESOLUTION.md — routing to forge_pair for conflict rework"
+            );
+        } else {
+            warn!(
+                pr_number,
+                files = conflicted_files.len(),
+                "CONFLICT_RESOLUTION.md NOT written (workspace root unavailable) — conflict rework may be incomplete"
             );
         }
 
-        let resolution = self
-            .conflict_resolver
-            .resolve(
-                owner,
-                repo,
-                &pr_info,
-                worktree_path.as_ref().map(|p| p.as_path()),
-            )
-            .await?;
+        Ok(VesselOutcome::Conflicts {
+            ticket_id,
+            pr_number,
+            conflicted_files,
+        })
+    }
 
-        match resolution {
-            ConflictResolution::Resolved => {
-                info!(pr_number, "Conflicts resolved — re-polling CI for updated branch");
-                let fresh_pr = self.client.get_pull_request(owner, repo, pr_number).await?;
-                let re_poll = self.poller.poll_until_terminal(owner, repo, &fresh_pr).await?;
-                match re_poll {
-                    CiPollResult::Status(CiStatus::Success) => {
-                        match self.merger.merge(owner, repo, &fresh_pr).await {
-                            Ok(result) if result.merged => Ok(VesselOutcome::Merged {
-                                ticket_id: ticket_id.unwrap_or_else(|| format!("T-{}", pr_number)),
-                                pr_number,
-                                sha: result.sha.unwrap_or_default(),
-                            }),
-                            Ok(result) => Ok(VesselOutcome::MergeBlocked {
-                                ticket_id,
-                                pr_number,
-                                reason: result.message,
-                            }),
-                            Err(e) => Ok(VesselOutcome::MergeBlocked {
-                                ticket_id,
-                                pr_number,
-                                reason: e.to_string(),
-                            }),
+    async fn merge_origin_main_in_worktree(
+        &self,
+        worktree_path: &PathBuf,
+        branch: &str,
+    ) -> Vec<String> {
+        let _ = ConflictResolver::abort_rebase(worktree_path).await;
+
+        let fetch = tokio::process::Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(worktree_path)
+            .output()
+            .await;
+
+        match fetch {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!(branch, %stderr, "git fetch origin/main failed in worktree");
+                return vec!["unknown — fetch failed".to_string()];
+            }
+            Err(e) => {
+                warn!(branch, error = %e, "git fetch origin/main failed in worktree");
+                return vec!["unknown — fetch failed".to_string()];
+            }
+        }
+
+        let merge = tokio::process::Command::new("git")
+            .args(["merge", "origin/main", "--no-edit"])
+            .current_dir(worktree_path)
+            .output()
+            .await;
+
+        match merge {
+            Ok(output) if output.status.success() => {
+                info!(branch, "origin/main merged cleanly — no conflicts");
+                vec![]
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("refusing to merge unrelated histories") {
+                    warn!(branch, "Unrelated histories — retrying with --allow-unrelated-histories");
+                    let retry = tokio::process::Command::new("git")
+                        .args(["merge", "origin/main", "--no-edit", "--allow-unrelated-histories"])
+                        .current_dir(worktree_path)
+                        .output()
+                        .await;
+
+                    return match retry {
+                        Ok(o) if o.status.success() => {
+                            info!(branch, "origin/main merged cleanly with --allow-unrelated-histories");
+                            vec![]
                         }
-                    }
-                    CiPollResult::Status(status) => Ok(VesselOutcome::CiFailed {
-                        ticket_id,
-                        pr_number,
-                        reason: format!("CI status after conflict resolution: {:?}", status),
-                    }),
-                    CiPollResult::Conflicts => {
-                        warn!(pr_number, "Conflicts re-appeared after resolution — needs forge rework");
-                        Ok(VesselOutcome::Conflicts {
-                            ticket_id,
-                            pr_number,
-                            conflicted_files: vec!["re-conflict after resolution".to_string()],
-                        })
-                    }
-                    CiPollResult::Timeout => Ok(VesselOutcome::CiTimeout { ticket_id, pr_number }),
+                        Ok(_) => {
+                            let files = self.list_conflicted_files(worktree_path).await;
+                            info!(branch, files = files.len(), "Merge with --allow-unrelated-histories produced conflict markers");
+                            files
+                        }
+                        Err(e) => {
+                            warn!(branch, error = %e, "git merge --allow-unrelated-histories failed");
+                            vec!["unknown — merge failed".to_string()]
+                        }
+                    };
                 }
+                let files = self.list_conflicted_files(worktree_path).await;
+                info!(branch, files = files.len(), "Merge produced conflict markers in worktree");
+                files
             }
-            ConflictResolution::NeedsIntelligentResolution { conflicted_files } => {
-                warn!(
-                    pr_number,
-                    files = conflicted_files.len(),
-                    "Conflicts require intelligent resolution — routing to forge for rework"
-                );
-                if let Some(ref wt) = worktree_path {
-                    let _ = ConflictResolver::abort_rebase(wt).await;
-                }
-                Ok(VesselOutcome::Conflicts {
-                    ticket_id,
-                    pr_number,
-                    conflicted_files,
-                })
+            Err(e) => {
+                warn!(branch, error = %e, "git merge origin/main failed");
+                vec!["unknown — merge failed".to_string()]
             }
-            ConflictResolution::Unresolvable { conflicted_files } => {
-                warn!(pr_number, "Conflicts unresolvable — routing to forge for rework");
-                Ok(VesselOutcome::Conflicts {
-                    ticket_id,
-                    pr_number,
-                    conflicted_files,
-                })
+        }
+    }
+
+    async fn list_conflicted_files(&self, worktree_path: &PathBuf) -> Vec<String> {
+        let output = tokio::process::Command::new("git")
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .current_dir(worktree_path)
+            .output()
+            .await;
+
+        match output {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                stdout.lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect()
             }
+            Err(_) => vec![],
+        }
+    }
+
+    async fn fetch_conflicted_files_from_github(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_info: &PrInfo,
+    ) -> Vec<String> {
+        match self.client.list_conflicted_files(owner, repo, pr_info.number).await {
+            Ok(files) => files,
+            Err(e) => {
+                warn!(pr = pr_info.number, error = %e, "Failed to fetch conflicted files from GitHub");
+                vec!["unknown — worktree not available, GitHub API failed".to_string()]
+            }
+        }
+    }
+
+    async fn write_conflict_resolution_md(
+        &self,
+        pr_info: &PrInfo,
+        conflicted_files: &[String],
+    ) -> bool {
+        let workspace_root = match std::env::var(ENV_WORKSPACE_ROOT).ok() {
+            Some(root) => root,
+            None => {
+                warn!("AGENTFLOW_WORKSPACE_ROOT not set — cannot write CONFLICT_RESOLUTION.md");
+                return false;
+            }
+        };
+
+        let branch = &pr_info.head_branch;
+        let parts: Vec<&str> = branch.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            warn!(branch, "Cannot parse branch for pair_id — skipping CONFLICT_RESOLUTION.md");
+            return false;
+        }
+        let pair_id = parts[0];
+
+        let shared_dir = PathBuf::from(&workspace_root)
+            .join("orchestration")
+            .join("pairs")
+            .join(pair_id)
+            .join("shared");
+
+        let files_list = if conflicted_files.is_empty() {
+            "No specific conflicted files detected — resolve all conflict markers.".to_string()
+        } else {
+            conflicted_files.iter()
+                .map(|f| format!("- {}", f))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let content = format!(
+            "# Conflict Resolution Required\n\n\
+             VESSEL detected merge conflicts between your branch and `origin/main`.\n\
+             `git merge origin/main` has been run in your worktree — conflict markers are present.\n\n\
+             ## Instructions\n\n\
+             1. Open each conflicted file listed below\n\
+             2. Resolve all conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`)\n\
+             3. Choose the correct integration of both sides — do NOT just pick one\n\
+             4. Stage the resolved files: `git add -A`\n\
+             5. Commit: `git commit -m \"resolve merge conflicts\"`\n\
+             6. Push: `git push`\n\
+             7. Write STATUS.json with `\"status\": \"PR_OPENED\"` and your PR number\n\n\
+             ## Conflicted Files\n\n{}\n\n\
+             ## Important\n\n\
+             - Do NOT abort the merge — the conflict markers are there for you to resolve\n\
+             - Resolve ALL conflict markers before committing\n\
+             - After you push, VESSEL will re-monitor CI automatically",
+             files_list,
+        );
+
+        let path = shared_dir.join("CONFLICT_RESOLUTION.md");
+        if let Err(e) = tokio::fs::write(&path, &content).await {
+            warn!(path = %path.display(), error = %e, "Failed to write CONFLICT_RESOLUTION.md");
+            false
+        } else {
+            info!(path = %path.display(), "Wrote CONFLICT_RESOLUTION.md for forge conflict rework");
+            true
         }
     }
 
@@ -484,17 +670,28 @@ impl VesselNode {
         store.set("pending_prs", json!(pending)).await;
     }
 
-    /// Mark a PR as awaiting rework so vessel skips it on subsequent cycles
-    /// and nexus sync_open_prs doesn't re-add it blindly.
-    async fn mark_pr_awaiting_rework(&self, store: &SharedStore, pr_number: u64) {
-        let mut pending: Vec<Value> = store.get_typed("pending_prs").await.unwrap_or_default();
-        for pr in pending.iter_mut() {
-            if pr["number"].as_u64() == Some(pr_number) {
-                pr["conflict_status"] = json!("awaiting_rework");
-                break;
-            }
-        }
-        store.set("pending_prs", json!(pending)).await;
+    /// Increment the conflict_resolution_attempts counter for a PR in pending_prs.
+    ///
+    /// When the PR is removed from pending_prs during conflict routing and later
+    /// re-added by the forge_pair node, the counter must be preserved. We store
+    /// it in a separate key to survive the pending_prs removal/re-add cycle.
+    async fn increment_conflict_resolution_attempts(&self, store: &SharedStore, pr_number: u64) {
+        let key = format!("_conflict_attempts_{}", pr_number);
+        let current: u32 = store.get_typed::<u32>(&key).await.unwrap_or(0);
+        let next = current + 1;
+        info!(
+            pr_number,
+            attempts = next,
+            max = MAX_CONFLICT_RESOLUTION_ATTEMPTS,
+            "Incremented conflict resolution attempt counter"
+        );
+        store.set(&key, json!(next)).await;
+    }
+
+    /// Get the current conflict resolution attempt count for a PR.
+    async fn get_conflict_resolution_attempts(&self, store: &SharedStore, pr_number: u64) -> u32 {
+        let key = format!("_conflict_attempts_{}", pr_number);
+        store.get_typed::<u32>(&key).await.unwrap_or(0)
     }
 
     /// Recycle a worker from Done back to Idle after its PR is merged.
@@ -518,6 +715,57 @@ impl VesselNode {
                     debug!(worker_id, status = ?other, "Worker not in Done state, skipping recycle");
                 }
             }
+        }
+    }
+
+    fn derive_worker_id_from_branch(head_branch: &str) -> Option<String> {
+        let parts: Vec<&str> = head_branch.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            let worker_id = parts[0].strip_prefix("forge-").unwrap_or(parts[0]);
+            Some(format!("forge-{}", worker_id))
+        } else {
+            None
+        }
+    }
+
+    async fn assign_worker_for_conflict_rework(
+        &self,
+        store: &SharedStore,
+        worker_id: &str,
+        ticket_id: &str,
+    ) {
+        let mut slots: HashMap<String, WorkerSlot> =
+            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+
+        if let Some(slot) = slots.get_mut(worker_id) {
+            let issue_url = match &slot.status {
+                WorkerStatus::Done { ticket_id: tid, .. } => {
+                    let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                    tickets.iter().find(|t| t.id == *tid).and_then(|t| t.issue_url.clone())
+                }
+                WorkerStatus::Idle => {
+                    let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                    tickets.iter().find(|t| t.id == ticket_id).and_then(|t| t.issue_url.clone())
+                }
+                _ => None,
+            };
+            info!(
+                worker_id,
+                ticket_id,
+                old_status = ?slot.status,
+                "Re-assigning worker for conflict rework (→ Assigned)"
+            );
+            slot.status = WorkerStatus::Assigned {
+                ticket_id: ticket_id.to_string(),
+                issue_url,
+            };
+            store.set(KEY_WORKER_SLOTS, json!(slots)).await;
+        } else {
+            warn!(
+                worker_id,
+                ticket_id,
+                "Worker slot not found — cannot assign for conflict rework"
+            );
         }
     }
 

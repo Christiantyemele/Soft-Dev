@@ -160,14 +160,31 @@ fn extract_decision(text: &str) -> Result<AgentDecision> {
         }
     }
 
-    // 3. Fall back: scan for the last '{' and try to parse from there to the end
-    // This handles cases where there's a conversational preamble.
-    if let Some(last_brace) = text.rfind('{') {
-        let potential_json = &text[last_brace..];
-        // We might need to find the matching '}' if there's trailing junk,
-        // but often LLMs just end with the JSON object.
+    // 3. Find the start of a JSON object. We prefer `{"` (JSON object start)
+    //    over any stray '{' in reasoning text, then fall back to rfind.
+    let json_start = text
+        .find("{\"")
+        .or_else(|| text.rfind('{'));
+
+    if let Some(start) = json_start {
+        let potential_json = &text[start..];
+
         if let Ok(d) = serde_json::from_str::<AgentDecision>(potential_json.trim()) {
             return Ok(d);
+        }
+
+        // 3b. Truncated JSON repair: LLM responses can be cut off before the
+        //     closing '"}' or '}'. Try appending common truncation suffixes.
+        let trimmed = potential_json.trim();
+        if trimmed.starts_with('{') {
+            let suffixes = ["}", "\"}", "\"\n}", "\n}"];
+            for suffix in suffixes {
+                let repaired = format!("{}{}", trimmed, suffix);
+                if let Ok(d) = serde_json::from_str::<AgentDecision>(&repaired) {
+                    warn!("Repaired truncated JSON by appending suffix");
+                    return Ok(d);
+                }
+            }
         }
     }
 
@@ -177,6 +194,14 @@ fn extract_decision(text: &str) -> Result<AgentDecision> {
         if trimmed.starts_with('{') {
             if let Ok(d) = serde_json::from_str::<AgentDecision>(trimmed) {
                 return Ok(d);
+            }
+            let suffixes = ["}", "\"}", "\"\n}", "\n}"];
+            for suffix in suffixes {
+                let repaired = format!("{}{}", trimmed, suffix);
+                if let Ok(d) = serde_json::from_str::<AgentDecision>(&repaired) {
+                    warn!("Repaired truncated JSON on line by appending suffix");
+                    return Ok(d);
+                }
             }
         }
     }
@@ -208,6 +233,28 @@ mod tests {
         );
         let d = extract_decision(text).unwrap();
         assert_eq!(d.action, "work_assigned");
+    }
+
+    #[test]
+    fn test_extract_decision_with_reasoning_preamble() {
+        let text = concat!(
+            "**Reasoning:** Some reasoning text here.\n\n",
+            r#"{"action": "merge_prs", "notes": "PR #40 needs merge."}"#
+        );
+        let d = extract_decision(text).unwrap();
+        assert_eq!(d.action, "merge_prs");
+        assert_eq!(d.notes, "PR #40 needs merge.");
+    }
+
+    #[test]
+    fn test_extract_decision_truncated_json_missing_quote_and_brace() {
+        let text = concat!(
+            "**Reasoning:** Some reasoning text here.\n\n",
+            r#"{"action": "merge_prs", "notes": "PR #40 needs merge."#
+        );
+        let d = extract_decision(text).unwrap();
+        assert_eq!(d.action, "merge_prs");
+        assert_eq!(d.notes, "PR #40 needs merge.");
     }
 
     #[test]

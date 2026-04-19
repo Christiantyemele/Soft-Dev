@@ -22,6 +22,7 @@ graph TB
         VESSEL -->|deployed| NEXUS
         VESSEL -->|deploy_failed| NEXUS
         VESSEL -->|merge_blocked| NEXUS
+        VESSEL -->|conflicts_detected| NEXUS
         FORGE -->|failed| NEXUS
     end
 
@@ -55,12 +56,13 @@ graph TB
 ```
 crates/agent-vessel/
 ├── src/
-│   ├── lib.rs           # Re-exports
-│   ├── types.rs         # VesselConfig, VesselOutcome
-│   ├── node.rs          # VesselNode (Node trait impl)
-│   ├── ci_poller.rs     # CI status polling
-│   ├── merger.rs        # PR merge execution
-│   └── notifier.rs      # Event emission
+│   ├── lib.rs              # Re-exports
+│   ├── types.rs            # VesselConfig, VesselOutcome, CiReadiness
+│   ├── node.rs             # VesselNode (Node trait impl)
+│   ├── ci_poller.rs        # CI status polling with early conflict detection
+│   ├── conflict_resolver.rs # Auto-resolution attempt (GitHub update-branch / local rebase)
+│   ├── merger.rs           # PR merge execution
+│   └── notifier.rs         # Event emission
 └── Cargo.toml
 ```
 
@@ -78,7 +80,7 @@ The orchestrator that implements the `Node` trait. It coordinates the three-phas
 
 ### CiPoller (`ci_poller.rs`)
 
-Polls GitHub API for CI status until terminal state.
+Polls GitHub API for CI status until terminal state. Includes early conflict detection: every 3rd poll attempt, re-fetches the PR from GitHub and checks `mergeable`. If `mergeable == Some(false)`, short-circuits the poll and returns `CiPollResult::Conflicts`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -94,11 +96,16 @@ Polls GitHub API for CI status until terminal state.
 │         │ No                        ▼                       │
 │         ▼                   ┌─────────────┐                 │
 │  ┌─────────────┐            │   Timeout?  │──Yes──► Timeout│
-│  │  Terminal?  │            └─────────────┘                │
-│  └─────────────┘                    │ No                   │
-│         │                           ▼                       │
-│         ▼                    Loop back to start             │
-│  Return: Success / Failure / Error                         │
+│  └─────────────┘            └─────────────┘                │
+│         │                           │ No                    │
+│         │   Every 3rd attempt:      │                       │
+│         │   check mergeable ────────┤                       │
+│         │                           │                       │
+│         ▼                           ▼                       │
+│  Terminal:               Loop back to start                 │
+│  Success / Failure / Error / Conflicts                     │
+│                                                             │
+│  If mergeable == Some(false) -> early return Conflicts     │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -106,6 +113,11 @@ Polls GitHub API for CI status until terminal state.
 **Configuration:**
 - `interval_secs`: 10 (default)
 - `max_attempts`: 60 (10 minutes total timeout)
+- `mergeable_check_interval`: 3 (re-check mergeability every 3rd attempt)
+
+### ConflictResolver (`conflict_resolver.rs`)
+
+Only used for `abort_rebase()` cleanup — aborts any in-progress rebase in the worktree before VESSEL runs `git merge origin/main`. The main conflict resolution is now handled by FORGE, not by VESSEL.
 
 ### PrMerger (`merger.rs`)
 
@@ -133,6 +145,8 @@ Emits events to SharedStore for dependency resolution.
 | `ci_failed` | CI failure | `{ ticket_id, pr_number, reason }` |
 | `merge_blocked` | Merge conflict | `{ ticket_id, pr_number, reason }` |
 | `ci_timeout` | Polling timeout | `{ ticket_id, pr_number }` |
+| `conflicts_detected` | Unresolvable merge conflicts | `{ ticket_id, pr_number, conflicted_files }` |
+| `ci_missing` | No CI workflows | `{ ticket_id, pr_number }` |
 
 **Store Keys:**
 - `ticket:{ticket_id}:status` → `"Merged"`
@@ -197,12 +211,13 @@ If VESSEL crashes after merging but before emitting `ticket_merged`, the system 
 
 ## Error Handling
 
-| Error Type | Action | Flow Route |
-|------------|--------|------------|
-| CI Failure | Emit `ci_failed` | `nexus` |
-| CI Timeout | Emit `ci_timeout` | `nexus` |
-| Merge Conflict | Emit `merge_blocked` | `nexus` |
-| API Error | Log and skip PR | Continue to next PR |
+| Error Type | Action | Store Effects | Flow Route |
+|------------|--------|----------------|------------|
+| CI Failure | Emit `ci_failed` | ticket -> Failed, PR removed from pending_prs | `nexus` (deploy_failed) |
+| CI Timeout | Emit `ci_timeout` | ticket -> Failed, PR removed from pending_prs | `nexus` (deploy_failed) |
+| Merge Conflict | Emit `conflicts_detected`, write CONFLICT_RESOLUTION.md | worker Done -> Assigned, PR stays in pending_prs | `forge_pair` (conflicts_detected) |
+| Merge Blocked | Emit `merge_blocked` | ticket -> Failed, PR removed from pending_prs | `nexus` (deploy_failed) |
+| API Error | Log and skip PR | None | Continue to next PR |
 
 ## Rate Limit Mitigation
 
