@@ -15,19 +15,17 @@ pub struct PrMerger {
 
 impl PrMerger {
     pub fn new(client: github::GithubRestClient, default_method: MergeMethod) -> Self {
-        Self { client, default_method }
+        Self {
+            client,
+            default_method,
+        }
     }
 
     /// Merge a PR with the configured method.
     /// Commit message includes ticket reference for GitHub issue linking.
-    pub async fn merge(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_info: &PrInfo,
-    ) -> Result<MergeResult> {
+    pub async fn merge(&self, owner: &str, repo: &str, pr_info: &PrInfo) -> Result<MergeResult> {
         let commit_title = build_merge_commit_title(pr_info);
-        
+
         info!(
             pr = pr_info.number,
             ticket_id = ?pr_info.ticket_id,
@@ -37,7 +35,13 @@ impl PrMerger {
 
         let result = self
             .client
-            .merge_pull_request(owner, repo, pr_info.number, &commit_title, self.default_method)
+            .merge_pull_request(
+                owner,
+                repo,
+                pr_info.number,
+                &commit_title,
+                self.default_method,
+            )
             .await?;
 
         if result.merged {
@@ -62,11 +66,11 @@ impl PrMerger {
 /// Format: "Merge PR #123: Ticket title (Resolves T-456)"
 fn build_merge_commit_title(pr_info: &PrInfo) -> String {
     let mut title = format!("Merge PR #{}: {}", pr_info.number, pr_info.title);
-    
+
     if let Some(ticket_id) = &pr_info.ticket_id {
         title.push_str(&format!(" (Resolves {})", ticket_id));
     }
-    
+
     title
 }
 

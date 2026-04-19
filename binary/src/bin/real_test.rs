@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
     // - FORGE implements segments -> SENTINEL evaluates -> segment-N-eval.md
     // - SENTINEL final review -> final-review.md
     // - FORGE opens PR -> STATUS.json
-    // 
+    //
     // VesselNode handles the merge gate:
     // - Polls CI status until terminal (success/failure/timeout)
     // - Detects merge conflicts early via GitHub's `mergeable` field

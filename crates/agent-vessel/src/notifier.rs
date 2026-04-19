@@ -153,9 +153,9 @@ mod tests {
     #[tokio::test]
     async fn test_emit_ticket_merged() {
         let store = SharedStore::new_in_memory();
-        
+
         VesselNotifier::emit_ticket_merged(&store, "T-42", 123, "abc123").await;
-        
+
         let events = store.get_events_since(0).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].agent, "vessel");
@@ -167,9 +167,9 @@ mod tests {
     #[tokio::test]
     async fn test_emit_ci_failed() {
         let store = SharedStore::new_in_memory();
-        
+
         VesselNotifier::emit_ci_failed(&store, Some("T-42"), 123, "Tests failed").await;
-        
+
         let events = store.get_events_since(0).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "ci_failed");
@@ -179,9 +179,9 @@ mod tests {
     #[tokio::test]
     async fn test_emit_merge_blocked() {
         let store = SharedStore::new_in_memory();
-        
+
         VesselNotifier::emit_merge_blocked(&store, Some("T-42"), 123, "Merge conflict").await;
-        
+
         let events = store.get_events_since(0).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "merge_blocked");
@@ -190,9 +190,9 @@ mod tests {
     #[tokio::test]
     async fn test_emit_ci_timeout() {
         let store = SharedStore::new_in_memory();
-        
+
         VesselNotifier::emit_ci_timeout(&store, Some("T-42"), 123).await;
-        
+
         let events = store.get_events_since(0).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "ci_timeout");
@@ -201,9 +201,9 @@ mod tests {
     #[tokio::test]
     async fn test_set_ticket_status_merged() {
         let store = SharedStore::new_in_memory();
-        
+
         VesselNotifier::set_ticket_status_merged(&store, "T-42").await;
-        
+
         let status = store.get("ticket:T-42:status").await;
         assert_eq!(status, Some(json!("Merged")));
     }

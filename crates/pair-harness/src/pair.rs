@@ -16,7 +16,9 @@ use crate::isolation::FileLockManager;
 use crate::process::{ProcessManager, SentinelMode};
 use crate::provision::Provisioner;
 use crate::reset::ResetManager;
-use crate::types::{FsEvent, PairConfig, PairOutcome, StatusJson, Ticket, TimeoutProfile, Complexity};
+use crate::types::{
+    Complexity, FsEvent, PairConfig, PairOutcome, StatusJson, Ticket, TimeoutProfile,
+};
 use crate::watchdog::Watchdog;
 use crate::watcher::SharedDirWatcher;
 use crate::worktree::{MergeMainResult, WorktreeManager};
@@ -31,9 +33,8 @@ const ENV_OVERHEAD_BUILD_SECS: u64 = 30;
 const ENV_OVERHEAD_BUFFER_SECS: u64 = 20;
 
 fn compute_effective_timeout(base_secs: u64, complexity: &Complexity) -> u64 {
-    let overhead = ENV_OVERHEAD_NETWORK_SECS
-        + ENV_OVERHEAD_STREAMING_SECS
-        + ENV_OVERHEAD_BUFFER_SECS;
+    let overhead =
+        ENV_OVERHEAD_NETWORK_SECS + ENV_OVERHEAD_STREAMING_SECS + ENV_OVERHEAD_BUFFER_SECS;
     let build_overhead = match complexity {
         Complexity::Low => ENV_OVERHEAD_BUILD_SECS / 2,
         Complexity::Medium => ENV_OVERHEAD_BUILD_SECS,
@@ -552,7 +553,8 @@ impl ForgeSentinelPair {
 
     /// Provision the worktree for this pair.
     async fn provision_worktree(&mut self, ticket: &Ticket) -> Result<()> {
-        let worktree_path = self.worktree
+        let worktree_path = self
+            .worktree
             .create_worktree(&self.config.pair_id, &ticket.id)
             .context("Failed to create worktree")?;
         self.config.worktree = worktree_path;
@@ -684,7 +686,7 @@ impl ForgeSentinelPair {
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::PlanReview);
         let child = self
             .process
-            .spawn_sentinel(
+            .spawn_sentinel_with_timeout(
                 &self.config.pair_id,
                 &self.ticket_id,
                 SentinelMode::PlanReview,
@@ -719,7 +721,7 @@ impl ForgeSentinelPair {
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::SegmentEval(segment));
         let child = self
             .process
-            .spawn_sentinel(
+            .spawn_sentinel_with_timeout(
                 &self.config.pair_id,
                 &self.ticket_id,
                 SentinelMode::SegmentEval(segment),
@@ -760,7 +762,7 @@ impl ForgeSentinelPair {
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::FinalReview);
         let child = self
             .process
-            .spawn_sentinel(
+            .spawn_sentinel_with_timeout(
                 &self.config.pair_id,
                 &self.ticket_id,
                 SentinelMode::FinalReview,
@@ -863,7 +865,18 @@ impl ForgeSentinelPair {
                 continue;
             }
             if in_profile {
-                if !trimmed.starts_with('-') && !trimmed.is_empty() && !trimmed.chars().next().map(|c| c.is_whitespace()).unwrap_or(false) && !trimmed.starts_with("plan_review") && !trimmed.starts_with("segment_eval") && !trimmed.starts_with("final_review") && !trimmed.starts_with("complexity") {
+                if !trimmed.starts_with('-')
+                    && !trimmed.is_empty()
+                    && !trimmed
+                        .chars()
+                        .next()
+                        .map(|c| c.is_whitespace())
+                        .unwrap_or(false)
+                    && !trimmed.starts_with("plan_review")
+                    && !trimmed.starts_with("segment_eval")
+                    && !trimmed.starts_with("final_review")
+                    && !trimmed.starts_with("complexity")
+                {
                     in_profile = false;
                     continue;
                 }
@@ -885,7 +898,12 @@ impl ForgeSentinelPair {
             }
         }
 
-        match (plan_review_secs, segment_eval_secs, final_review_secs, complexity) {
+        match (
+            plan_review_secs,
+            segment_eval_secs,
+            final_review_secs,
+            complexity,
+        ) {
             (Some(pr), Some(se), Some(fr), Some(cx)) => Some(TimeoutProfile {
                 plan_review_secs: pr,
                 segment_eval_secs: se,
@@ -1059,8 +1077,13 @@ impl ForgeSentinelPair {
         };
 
         Ok(Some(match status.status.as_str() {
-            "PR_OPENED" | "COMPLETE" | "complete" | "completed" | "COMPLETED"
-            | "SEGMENTS_COMPLETE" | "SEGMENT_COMPLETE_AWAITING_REVIEW"
+            "PR_OPENED"
+            | "COMPLETE"
+            | "complete"
+            | "completed"
+            | "COMPLETED"
+            | "SEGMENTS_COMPLETE"
+            | "SEGMENT_COMPLETE_AWAITING_REVIEW"
             | "ALL_SEGMENTS_DONE" => {
                 if status.pr_url.is_some() && !status.pr_url.as_ref().unwrap().is_empty() {
                     PairOutcome::PrOpened {
@@ -1095,7 +1118,10 @@ impl ForgeSentinelPair {
                     debug!(status = s, "Intermediate segment status in STATUS.json — treating as non-terminal, continuing event loop");
                     return Ok(None);
                 }
-                warn!(status = s, "Unrecognized STATUS.json status — treating as fuel exhausted");
+                warn!(
+                    status = s,
+                    "Unrecognized STATUS.json status — treating as fuel exhausted"
+                );
                 PairOutcome::FuelExhausted {
                     reason: format!("Unknown status: {}", s),
                     reset_count: self.reset.reset_count(),

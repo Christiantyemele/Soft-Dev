@@ -162,9 +162,7 @@ fn extract_decision(text: &str) -> Result<AgentDecision> {
 
     // 3. Find the start of a JSON object. We prefer `{"` (JSON object start)
     //    over any stray '{' in reasoning text, then fall back to rfind.
-    let json_start = text
-        .find("{\"")
-        .or_else(|| text.rfind('{'));
+    let json_start = text.find("{\"").or_else(|| text.rfind('{'));
 
     if let Some(start) = json_start {
         let potential_json = &text[start..];
