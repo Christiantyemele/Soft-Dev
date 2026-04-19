@@ -19,10 +19,11 @@ use crate::reset::ResetManager;
 use crate::types::{FsEvent, PairConfig, PairOutcome, StatusJson, Ticket, TimeoutProfile, Complexity};
 use crate::watchdog::Watchdog;
 use crate::watcher::SharedDirWatcher;
-use crate::worktree::WorktreeManager;
+use crate::worktree::{MergeMainResult, WorktreeManager};
 
 const DEFAULT_SENTINEL_TIMEOUT_SECS: u64 = 120;
 const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300; // 5 minutes to write PLAN.md
+const MAX_SENTINEL_RETRIES: u32 = 2;
 
 const ENV_OVERHEAD_NETWORK_SECS: u64 = 15;
 const ENV_OVERHEAD_STREAMING_SECS: u64 = 10;
@@ -59,6 +60,7 @@ pub struct ForgeSentinelPair {
     start_time: Instant,
     sentinel_tracker: Option<SentinelTracker>,
     forge_spawn_time: Instant,
+    sentinel_retries: u32,
     ticket_id: String,
     plan_approved: bool,
     final_approved: bool,
@@ -94,6 +96,7 @@ impl ForgeSentinelPair {
             start_time: Instant::now(),
             sentinel_tracker: None,
             forge_spawn_time: Instant::now(),
+            sentinel_retries: 0,
             ticket_id: String::new(),
             plan_approved: false,
             final_approved: false,
@@ -132,6 +135,17 @@ impl ForgeSentinelPair {
             }
         }
 
+        // Check if this is a conflict rework — skip plan review, go straight to implementation
+        let conflict_resolution_path = self.config.shared.join("CONFLICT_RESOLUTION.md");
+        if conflict_resolution_path.exists() {
+            self.plan_approved = true;
+            self.final_approved = true;
+            info!(
+                pair = %self.config.pair_id,
+                "CONFLICT_RESOLUTION.md detected — skipping plan/final review, forge will resolve conflicts"
+            );
+        }
+
         // Check if this is a resume with existing final approval
         let final_review_path = self.config.shared.join("final-review.md");
         if final_review_path.exists() {
@@ -155,6 +169,39 @@ impl ForgeSentinelPair {
 
         // 1. Provision worktree (reuses existing if on correct branch)
         self.provision_worktree(ticket).await?;
+
+        // 1b. If conflict rework: merge origin/main into worktree so conflicts are visible to FORGE
+        if conflict_resolution_path.exists() {
+            match self.worktree.merge_origin_main(&self.config.worktree) {
+                Ok(MergeMainResult::Clean) => {
+                    info!(
+                        pair = %self.config.pair_id,
+                        "origin/main merged cleanly during conflict rework — force-pushing updated branch to remote"
+                    );
+                    if let Err(e) = self.worktree.force_push_branch(&self.config.worktree) {
+                        warn!(
+                            pair = %self.config.pair_id,
+                            error = %e,
+                            "Failed to force-push after clean merge — GitHub PR may still show conflicts"
+                        );
+                    }
+                }
+                Ok(MergeMainResult::Conflict { conflicted_files }) => {
+                    info!(
+                        pair = %self.config.pair_id,
+                        files = conflicted_files.len(),
+                        "Conflict markers materialized in worktree — FORGE will resolve"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        pair = %self.config.pair_id,
+                        error = %e,
+                        "Failed to merge origin/main into worktree for conflict rework — FORGE may not see conflicts"
+                    );
+                }
+            }
+        }
 
         // 2. Provision configuration files
         self.provision_config(ticket).await?;
@@ -204,6 +251,7 @@ impl ForgeSentinelPair {
                         let mode = tracker.mode.clone();
                         if status.success() {
                             self.materialize_sentinel_artifact(&mode).await?;
+                            self.sentinel_retries = 0;
                         } else {
                             warn!(
                                 mode = ?mode,
@@ -542,12 +590,25 @@ impl ForgeSentinelPair {
         let provisioner = Provisioner::new(&self.config.project_root);
         provisioner.write_ticket(&self.config.shared, ticket)?;
 
-        // Write a basic TASK.md
-        let task = format!(
-            "Implement ticket {}.\n\nBranch: {}\n\nWhen done, open a PR and write STATUS.json.",
-            ticket.id,
-            WorktreeManager::branch_name(&self.config.pair_id, &ticket.id)
-        );
+        let conflict_path = self.config.shared.join("CONFLICT_RESOLUTION.md");
+        let task = if conflict_path.exists() {
+            format!(
+                "Resolve merge conflicts for ticket {}.\n\n\
+                 Branch: {}\n\n\
+                 CONFLICT_RESOLUTION.md in this directory contains detailed instructions.\n\
+                 Resolve all conflict markers, commit, then force-push with 'git push --force-with-lease origin HEAD' (the branch has diverged due to the merge of origin/main).\n\
+                 If a PR already exists for this branch, do NOT create a new one — just push and update STATUS.json.\n\
+                 Write STATUS.json with status PR_OPENED, the existing PR URL if known, or create a new PR only if none exists.",
+                ticket.id,
+                WorktreeManager::branch_name(&self.config.pair_id, &ticket.id)
+            )
+        } else {
+            format!(
+                "Implement ticket {}.\n\nBranch: {}\n\nWhen done, open a PR and write STATUS.json.",
+                ticket.id,
+                WorktreeManager::branch_name(&self.config.pair_id, &ticket.id)
+            )
+        };
         provisioner.write_task(&self.config.shared, &task)
     }
 
@@ -608,6 +669,15 @@ impl ForgeSentinelPair {
 
     /// Spawn SENTINEL for plan review.
     async fn spawn_sentinel_for_plan(&mut self) -> Result<()> {
+        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries,
+                "SENTINEL plan review exceeded max retries — forcing changes_requested and reset"
+            );
+            self.reset.increment_reset();
+            return Ok(());
+        }
+        self.sentinel_retries += 1;
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::PlanReview);
         let child = self
             .process
@@ -633,6 +703,16 @@ impl ForgeSentinelPair {
 
     /// Spawn SENTINEL for segment evaluation.
     async fn spawn_sentinel_for_segment(&mut self, segment: u32) -> Result<()> {
+        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries,
+                segment,
+                "SENTINEL segment eval exceeded max retries — forcing changes_requested and reset"
+            );
+            self.reset.increment_reset();
+            return Ok(());
+        }
+        self.sentinel_retries += 1;
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::SegmentEval(segment));
         let child = self
             .process
@@ -664,6 +744,15 @@ impl ForgeSentinelPair {
             return Ok(());
         }
 
+        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries,
+                "SENTINEL final review exceeded max retries — forcing changes_requested and reset"
+            );
+            self.reset.increment_reset();
+            return Ok(());
+        }
+        self.sentinel_retries += 1;
         info!("Spawning SENTINEL for final review");
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::FinalReview);
         let child = self
@@ -958,14 +1047,18 @@ impl ForgeSentinelPair {
                 warn!(
                     error = %e,
                     path = %path.display(),
-                    "Failed to parse STATUS.json - treating as incomplete write"
+                    "Failed to parse STATUS.json — renaming to .broken to break respawn loop"
                 );
+                let broken_path = self.config.shared.join("STATUS.json.broken");
+                let _ = tokio::fs::rename(&path, &broken_path).await;
                 return Ok(None);
             }
         };
 
         Ok(Some(match status.status.as_str() {
-            "PR_OPENED" | "COMPLETE" | "complete" | "completed" | "COMPLETED" | "SEGMENTS_COMPLETE" | "SEGMENT_COMPLETE_AWAITING_REVIEW" => {
+            "PR_OPENED" | "COMPLETE" | "complete" | "completed" | "COMPLETED"
+            | "SEGMENTS_COMPLETE" | "SEGMENT_COMPLETE_AWAITING_REVIEW"
+            | "ALL_SEGMENTS_DONE" => {
                 if status.pr_url.is_some() && !status.pr_url.as_ref().unwrap().is_empty() {
                     PairOutcome::PrOpened {
                         pr_url: status.pr_url.clone().unwrap_or_default(),
@@ -993,10 +1086,18 @@ impl ForgeSentinelPair {
                 reason: "Fuel exhausted".to_string(),
                 reset_count: status.context_resets,
             },
-            _ => PairOutcome::FuelExhausted {
-                reason: format!("Unknown status: {}", status.status),
-                reset_count: self.reset.reset_count(),
-            },
+            _ => {
+                let s = status.status.as_str();
+                if s.starts_with("SEGMENT_") && s.ends_with("_DONE") {
+                    debug!(status = s, "Intermediate segment status in STATUS.json — treating as non-terminal, continuing event loop");
+                    return Ok(None);
+                }
+                warn!(status = s, "Unrecognized STATUS.json status — treating as fuel exhausted");
+                PairOutcome::FuelExhausted {
+                    reason: format!("Unknown status: {}", s),
+                    reset_count: self.reset.reset_count(),
+                }
+            }
         }))
     }
 
@@ -1144,11 +1245,13 @@ impl ForgeSentinelPair {
 
     /// Cleanup after pair completion.
     async fn cleanup(&self, _forge: &Child) -> Result<()> {
-        // Release all file locks
         self.locks.release_all_for_pair(&self.config.pair_id)?;
 
-        // Remove worktree (optional - could keep for debugging)
-        // self.worktree.remove_worktree(&self.config.pair_id)?;
+        let conflict_path = self.config.shared.join("CONFLICT_RESOLUTION.md");
+        if conflict_path.exists() {
+            let _ = tokio::fs::remove_file(&conflict_path).await;
+            debug!("Removed CONFLICT_RESOLUTION.md after pair completion");
+        }
 
         info!(pair = %self.config.pair_id, "Cleanup complete");
         Ok(())

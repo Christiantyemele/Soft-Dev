@@ -29,13 +29,14 @@ The key architectural principle is that **NEXUS is the orchestrator of the entir
 |  NEXUS   |                 | FORGE-SENTINEL|             | VESSEL  |
 |          | <-------------- |              | <---------- |         |
 +----------+  failed/        +--------------+  deployed/  +---------+
-    |         suspended                           deploy_failed
-    |                                              merge_blocked
-    |         merge_prs --------------------------------+
-    |                                                 |
-    |         no_work                                 |
-    +--------> (loop)                                 |
-              NEXUS <---------------------------------+
+    |         suspended         |               deploy_failed
+    |                           |               merge_blocked
+    |         merge_prs         |  conflicts_     no_work
+    | --------------------------+  detected          |
+    |                           |                    |
+    |         no_work           +--------------------+
+    +--------> (loop)          |
+              NEXUS <-----------+
 ```
 
 ### Routing Table
@@ -50,9 +51,11 @@ The key architectural principle is that **NEXUS is the orchestrator of the entir
 | FORGE-SENTINEL | `pr_opened` | VESSEL | Implementation complete, PR created |
 | FORGE-SENTINEL | `failed` | NEXUS | Implementation failed, retry possible |
 | FORGE-SENTINEL | `suspended` | NEXUS | Worker needs command approval |
+| FORGE-SENTINEL | `no_tickets` | NEXUS | No workers assigned/working (empty batch) |
 | VESSEL | `deployed` | NEXUS | PR merged successfully |
 | VESSEL | `deploy_failed` | NEXUS | CI failed or merge blocked |
 | VESSEL | `merge_blocked` | NEXUS | Merge conflict or other blockage |
+| VESSEL | `conflicts_detected` | FORGE-SENTINEL | Merge conflicts — same worker resolves and pushes |
 | VESSEL | `no_work` | NEXUS | No pending PRs to process |
 
 ---
@@ -81,6 +84,7 @@ The FORGE-SENTINEL pair runs an event-driven lifecycle:
 | `IMPLEMENTATION_COMPLETE` | Blocked ("needs push/PR creation") | -> NEXUS (forge attempts auto-push) |
 | `BLOCKED` | Blocked | -> NEXUS (suspended) |
 | `FUEL_EXHAUSTED` | FuelExhausted | -> NEXUS (failed, possibly retryable) |
+| `SEGMENT_N_DONE` (intermediate) | Non-terminal — harness continues event loop | Continue watching |
 | Any other string | FuelExhausted ("Unknown status: X") | -> NEXUS (failed) |
 
 ### Phase 2: Merge (VESSEL)
@@ -112,35 +116,138 @@ All agents communicate through a SharedStore (in-memory or Redis-backed).
 
 ### Store Keys
 
-| Key | Type | Written By | Read By |
+| Key | Type | Written By | Read By | Description |
+|---|---|---|---|---|
+| `tickets` | `Vec<Ticket>` | NEXUS, FORGE, VESSEL, init | NEXUS, FORGE, VESSEL | All tracked work items and their status |
+| `worker_slots` | `HashMap<String, WorkerSlot>` | NEXUS, FORGE, VESSEL, init | NEXUS, FORGE | Available forge worker slots and their state |
+| `pending_prs` | `Vec<serde_json::Value>` | NEXUS, FORGE, VESSEL, init | NEXUS, VESSEL | PRs awaiting VESSEL merge processing |
+| `command_gate` | `HashMap<String, Value>` | FORGE, NEXUS | NEXUS | Suspended workers awaiting command approval |
+| `ci_readiness` | `CiReadiness` enum | NEXUS | NEXUS, VESSEL | Whether CI workflows exist in the repository |
+| `repository` | `String` | init | NEXUS, VESSEL | "owner/repo" string for GitHub API calls |
+| `_no_work_count` | `u32` | NEXUS | NEXUS | Consecutive no_work cycles (stops at 3) |
+| `_forge_batch_workers` | `Vec<String>` | FORGE prep | FORGE post | Worker IDs in current batch (for failure cleanup) |
+| `ticket:{id}:status` | `String` | VESSEL | (external) | Per-ticket merge status for dependency resolution |
+| `command_gate::{id}` | `CommandProposal` | CommandGate | NEXUS | Dangerous command proposal from a worker |
+| `command_gate::{id}::decision` | `CommandDecision` | NEXUS | CommandGate | Approval/rejection of a proposed command |
+
+### Value Structures
+
+#### Ticket (`crates/config/src/state.rs`)
+
+```rust
+pub struct Ticket {
+    pub id: String,           // e.g. "T-001", "T-CI-001"
+    pub title: String,
+    pub body: String,
+    pub priority: u32,
+    pub branch: Option<String>,
+    pub status: TicketStatus,
+    pub issue_url: Option<String>,
+    pub attempts: u32,        // MAX_ATTEMPTS = 3
+}
+```
+
+#### TicketStatus (`crates/config/src/state.rs`)
+
+```rust
+#[serde(tag = "type")]
+pub enum TicketStatus {
+    Open,                                                    // Assignable
+    Assigned { worker_id: String },                          // Not assignable
+    InProgress { worker_id: String },                        // Not assignable
+    Completed { worker_id: String, outcome: String },        // Not assignable
+    Merged { worker_id: String, pr_number: u64 },            // Not assignable (terminal)
+    Failed { worker_id: String, reason: String, attempts: u32 }, // Assignable if attempts < 3
+    Exhausted { worker_id: String, attempts: u32 },          // Not assignable (terminal)
+}
+```
+
+#### WorkerSlot (`crates/config/src/state.rs`)
+
+```rust
+pub struct WorkerSlot {
+    pub id: String,       // e.g. "forge-1"
+    pub status: WorkerStatus,
+}
+
+#[serde(tag = "type")]
+pub enum WorkerStatus {
+    Idle,
+    Assigned { ticket_id: String, issue_url: Option<String> },
+    Working { ticket_id: String, issue_url: Option<String> },
+    Done { ticket_id: String, outcome: String },
+    Suspended { ticket_id: String, reason: String, issue_url: Option<String> },
+}
+```
+
+#### pending_prs Entry (JSON Value, not strongly typed)
+
+Entries come from two sources with different schemas:
+
+**From FORGE post_batch** (minimal):
+```json
+{ "number": 42, "ticket_id": "T-001", "branch": "forge-1/T-001", "worker_id": "forge-1" }
+```
+
+**From NEXUS sync_open_prs** (GitHub-sourced, richer):
+```json
+{
+  "number": 42, "ticket_id": "T-001",
+  "head_sha": "abc123", "head_branch": "forge-1/T-001",
+  "base_branch": "main", "title": "PR title",
+  "mergeable": true, "has_conflicts": false
+}
+```
+
+The `worker_id` field is required for VESSEL to recycle the worker after merge/conflict.
+
+### Emitted Events
+
+Events are written to a ring buffer in the SharedStore. Each event has `{ agent, event_type, payload, ts }`.
+
+**Automatic lifecycle events** (emitted by the Node/BatchNode framework for every node):
+`prep_started`, `prep_done`, `exec_started`, `exec_done`, `post_started`, `post_done`, `batch_prep_started`, `batch_empty`, `batch_exec_started`, `batch_exec_done`, `batch_done`
+
+**Domain events** (emitted by VesselNotifier):
+
+| Agent | Event Type | Trigger | Payload |
 |---|---|---|---|
-| `tickets` | Vec of Ticket | NEXUS, FORGE, VESSEL | NEXUS, FORGE, VESSEL |
-| `worker_slots` | HashMap of WorkerSlot | NEXUS, FORGE, VESSEL | NEXUS, FORGE |
-| `pending_prs` | Vec of Value | FORGE | VESSEL, NEXUS |
-| `command_gate` | HashMap of Value | FORGE | NEXUS |
-| `ci_readiness` | CiReadiness enum | NEXUS | NEXUS, VESSEL |
-| `repository` | String | Init code | NEXUS, VESSEL |
-| `_no_work_count` | u32 | NEXUS | NEXUS |
-| `_forge_batch_workers` | Vec of String | FORGE prep | FORGE post |
+| `vessel` | `ticket_merged` | Successful merge | `{ ticket_id, pr_number, sha }` |
+| `vessel` | `ci_failed` | CI status terminal-failure | `{ ticket_id, pr_number, reason }` |
+| `vessel` | `merge_blocked` | GitHub merge API rejection | `{ ticket_id, pr_number, reason }` |
+| `vessel` | `ci_timeout` | CI poll max attempts reached | `{ ticket_id, pr_number }` |
+| `vessel` | `ci_missing` | Merged without CI validation | `{ ticket_id, pr_number }` |
+| `vessel` | `conflicts_detected` | Unresolvable merge conflicts | `{ ticket_id, pr_number, conflicted_files }` |
+
+**CommandGate events**:
+
+| Agent | Event Type | Trigger |
+|---|---|---|
+| `{worker_id}` | `command_gate_proposed` | Worker proposes dangerous command |
+| `{worker_id}` | `command_gate_approved` | Nexus approves command |
+| `{worker_id}` | `command_gate_rejected` | Nexus rejects command |
 
 ### Ticket Lifecycle
 
 ```
-                    +--------------------------------------+
-                    |                                      |
-                    v                                      |
-  Open --> Assigned --> InProgress --> Completed --> Merged
-    |          |                         (pr_opened)
-    |          |                              |
-    |          v                              |
-    |        Failed <-------------------------+
-    |       (attempts < 3)
-    |          |
-    |          v
-    |        Exhausted
-    |       (attempts >= 3)
-    |
-    +--------> (re-assignable)
+                     +--------------------------------------+
+                     |         (VESSEL conflict             |
+                     |          recovery)                    |
+                     |              |                        |
+                     v              |                        |
+   Open --> Assigned --> InProgress --> Completed --> Merged
+     ^          |                         (pr_opened)        |
+     |          |                              |             |
+     |          v                              |             |
+     |        Failed <-------------------------+             |
+     |       (attempts < 3)          VESSEL marks Failed    |
+     |          |                   on CI failure /         |
+     |          v                   merge conflict           |
+     |        Exhausted                                      |
+     |       (attempts >= 3)                                 |
+     |          |                                            |
+     +----------+  (nexus resets conflict-Failed             |
+       (re-assignable)   tickets back to Open)               |
 ```
 
 | Status | Meaning | Assignable? |
@@ -152,6 +259,8 @@ All agents communicate through a SharedStore (in-memory or Redis-backed).
 | Merged { worker_id, pr_number } | PR merged, fully complete | No |
 | Failed { worker_id, reason, attempts } | Failed, retryable if attempts < 3 | Yes (if attempts < 3) |
 | Exhausted { worker_id, attempts } | Max retries reached, terminal | No |
+
+> **Note on conflict recovery:** Nexus's deterministic conflict recovery resets `Failed` tickets (where reason contains "Merge conflicts") back to `Open` regardless of attempts. This means conflict-triggered rework is not capped by `MAX_ATTEMPTS`. Only forge-level failures (spawn failure, fuel exhaustion) can produce the `Exhausted` terminal state.
 
 ### Worker Lifecycle
 
@@ -266,6 +375,82 @@ The AgentRunner invokes the LLM with the nexus persona and context. The LLM retu
 
 ---
 
+## Merge Conflict Handling
+
+Merge conflicts are a first-class concern in the flow. When VESSEL detects conflicts on a PR, it routes directly back to the same FORGE-SENTINEL pair that created the PR — the same worker resolves the conflicts and pushes, then VESSEL re-monitors CI.
+
+### Conflict Detection
+
+Conflicts are detected at two points:
+
+1. **CiPoller early detection** (`crates/agent-vessel/src/ci_poller.rs`): Every 3rd CI poll attempt, the poller re-fetches the PR from GitHub and checks `mergeable`. If `mergeable == Some(false)`, it short-circuits the CI poll and returns `CiPollResult::Conflicts`.
+
+2. **Post-timeout check** (`crates/agent-vessel/src/node.rs`): If CI times out, VESSEL re-fetches the PR and checks `has_conflicts()`. If conflicts are found after timeout, it treats it as a conflict case.
+
+### Conflict Rework Flow
+
+```
+  VESSEL detects conflicts (CiPollResult::Conflicts or timeout + has_conflicts)
+       |
+       v
+  VesselNode.handle_conflicts():
+       |-- Abort any in-progress rebase in worktree
+       |-- git merge origin/main --no-edit in worktree (produces conflict markers)
+       |-- List conflicted files (git diff --name-only --diff-filter=U)
+       |-- Write CONFLICT_RESOLUTION.md to pair's shared/ dir with:
+       |     - List of conflicted files
+       |     - Step-by-step resolution instructions
+       |     - "Resolve markers, commit, push, write STATUS.json"
+       |
+       v
+  VesselNode.post() (VesselOutcome::Conflicts):
+       |-- emit "conflicts_detected" event
+       |-- Keep PR in pending_prs (VESSEL will re-check it after push)
+       |-- Re-assign worker from Done -> Assigned (same ticket, same worker)
+       |-- return "conflicts_detected" action
+       |
+       v
+  Flow routes directly to FORGE-SENTINEL (forge_pair)
+       |
+       v
+  ForgeSentinelPair.run():
+       |-- Detects CONFLICT_RESOLUTION.md in shared/ dir
+       |-- Skips plan review + final review (plan_approved=true, final_approved=true)
+       |-- Writes TASK.md with conflict resolution instructions
+       |-- FORGE resolves conflict markers, commits, pushes
+       |-- FORGE writes STATUS.json with PR_OPENED
+       |-- Pair cleanup: removes CONFLICT_RESOLUTION.md
+       |
+       v
+  VESSEL re-monitors CI on updated branch
+       |-- If CI passes -> merge -> ticket_merged
+       |-- If new conflicts -> repeat conflict rework loop
+```
+
+### No Nexus Involvement
+
+Conflicts route directly from VESSEL → FORGE-SENTINEL, bypassing NEXUS. This is because:
+
+1. **Same worker, same worktree:** The worker that created the PR has the full implementation context in its worktree. Sending the ticket through NEXUS would lose this context.
+2. **Same PR, same branch:** After resolving conflicts and pushing, the existing PR is updated — no need to create a new PR.
+3. **Faster cycle:** No LLM call needed to decide which worker gets the ticket. The same worker that knows the code resolves the conflicts.
+
+### Key Design Decisions
+
+1. **Direct VESSEL → FORGE routing:** `conflicts_detected` routes to `forge_pair`, not `nexus`. The same worker that created the PR resolves the conflicts.
+
+2. **PR stays in pending_prs:** The conflicting PR is NOT removed from `pending_prs`. After forge pushes the resolution, VESSEL will pick it up on the next cycle.
+
+3. **Worker re-assigned, not recycled:** The worker is moved from `Done` back to `Assigned` (same ticket), so forge_pair picks it up in `prep_batch`.
+
+4. **git merge origin/main in worktree:** VESSEL runs `git merge origin/main --no-edit` in the worktree to produce conflict markers. This gives FORGE the exact diff context it needs to resolve conflicts intelligently.
+
+5. **CONFLICT_RESOLUTION.md as instruction file:** Written to the pair's shared directory. FORGE reads it and knows exactly which files have conflicts and how to resolve them. Deleted on pair cleanup after successful PR.
+
+6. **Conflict rework is NOT capped by MAX_ATTEMPTS:** Since the same worker is re-assigned (not a fresh start), conflict rework doesn't increment the ticket's `attempts` counter.
+
+---
+
 ## Failure Scenarios and Recovery
 
 ### Scenario 1: FORGE crashes after PR creation (the original bug)
@@ -301,6 +486,18 @@ Tickets in Assigned, workers in Working, pending_prs with unmerged PRs.
 
 **Recovery:** reconcile() detects all inconsistencies at once. NEXUS prioritizes merge_prs first (unmerged PRs), then recover_orphans() resets orphaned tickets so they can be re-assigned.
 
+### Scenario 6: VESSEL detects merge conflicts
+
+VESSEL processes PR, detects conflicts, routes directly to FORGE-SENTINEL for rework.
+
+**Recovery:**
+1. VESSEL runs `git merge origin/main` in worktree to produce conflict markers
+2. VESSEL writes `CONFLICT_RESOLUTION.md` with conflicted files and instructions
+3. VESSEL re-assigns worker from `Done` → `Assigned` (same ticket)
+4. Flow routes `conflicts_detected` directly to `forge_pair`
+5. FORGE detects `CONFLICT_RESOLUTION.md`, skips plan/final review, resolves conflicts, commits, pushes
+6. VESSEL re-monitors CI on the updated branch
+
 ---
 
 ## Key Source Files
@@ -311,8 +508,14 @@ Tickets in Assigned, workers in Working, pending_prs with unmerged PRs.
 | NEXUS persona | orchestration/agent/agents/nexus.agent.md |
 | FORGE-SENTINEL pair node | crates/agent-forge/src/lib.rs |
 | Pair harness (STATUS.json) | crates/pair-harness/src/pair.rs |
-| VESSEL node | crates/agent-vessel/src/lib.rs |
+| VESSEL node | crates/agent-vessel/src/node.rs |
+| VESSEL CI poller | crates/agent-vessel/src/ci_poller.rs |
+| VESSEL conflict handling | crates/agent-vessel/src/conflict_resolver.rs (abort_rebase only) |
+| VESSEL notifier | crates/agent-vessel/src/notifier.rs |
 | State types and constants | crates/config/src/state.rs |
+| Action constants | crates/pocketflow-core/src/action.rs |
+| Batch node framework | crates/pocketflow-core/src/batch.rs |
+| Flow routing engine | crates/pocketflow-core/src/flow.rs |
 | Flow definition (production) | binary/src/bin/real_test.rs |
 | Flow definition (dev/dry-run) | binary/src/main.rs |
 | Agent registry | orchestration/agent/registry.json |

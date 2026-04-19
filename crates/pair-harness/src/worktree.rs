@@ -227,6 +227,109 @@ impl WorktreeManager {
         Ok(DivergenceStatus::UpToDate)
     }
 
+    /// Fetch origin/main and merge it into the worktree branch.
+    ///
+    /// This materializes conflicts locally so FORGE can see and resolve them.
+    /// Used when VESSEL detects merge conflicts on GitHub but the worktree
+    /// doesn't have them locally because main was never merged in.
+    pub fn merge_origin_main(&self, worktree_path: &Path) -> Result<MergeMainResult> {
+        info!(path = %worktree_path.display(), "Fetching origin/main into worktree");
+
+        let fetch = Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to fetch origin/main in worktree")?;
+
+        if !fetch.status.success() {
+            return Err(anyhow!(
+                "git fetch origin/main failed in worktree: {}",
+                String::from_utf8_lossy(&fetch.stderr)
+            ));
+        }
+
+        info!(path = %worktree_path.display(), "Merging origin/main into worktree branch");
+
+        let merge = Command::new("git")
+            .args(["merge", "origin/main", "--no-edit"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to merge origin/main in worktree")?;
+
+        if merge.status.success() {
+            info!(path = %worktree_path.display(), "origin/main merged cleanly — no conflicts");
+            return Ok(MergeMainResult::Clean);
+        }
+
+        let stderr = String::from_utf8_lossy(&merge.stderr);
+
+        if stderr.contains("refusing to merge unrelated histories") {
+            warn!(
+                path = %worktree_path.display(),
+                "Branch and origin/main have unrelated histories — retrying with --allow-unrelated-histories"
+            );
+            let retry = Command::new("git")
+                .args([
+                    "merge",
+                    "origin/main",
+                    "--no-edit",
+                    "--allow-unrelated-histories",
+                ])
+                .current_dir(worktree_path)
+                .output()
+                .context("Failed to merge origin/main with --allow-unrelated-histories")?;
+
+            if retry.status.success() {
+                info!(path = %worktree_path.display(), "origin/main merged cleanly with --allow-unrelated-histories");
+                return Ok(MergeMainResult::Clean);
+            }
+
+            let retry_stderr = String::from_utf8_lossy(&retry.stderr);
+            if retry_stderr.contains("conflict") || retry_stderr.contains("CONFLICT") {
+                let conflicted_files = Self::list_conflicted_files_in(worktree_path)?;
+                warn!(
+                    path = %worktree_path.display(),
+                    files = conflicted_files.len(),
+                    "Merge with --allow-unrelated-histories produced conflict markers"
+                );
+                return Ok(MergeMainResult::Conflict { conflicted_files });
+            }
+
+            return Err(anyhow!(
+                "git merge origin/main --allow-unrelated-histories failed: {}",
+                retry_stderr
+            ));
+        }
+
+        if stderr.contains("conflict") || stderr.contains("CONFLICT") {
+            let conflicted_files = Self::list_conflicted_files_in(worktree_path)?;
+            warn!(
+                path = %worktree_path.display(),
+                files = conflicted_files.len(),
+                "Merge produced conflict markers in worktree"
+            );
+            return Ok(MergeMainResult::Conflict { conflicted_files });
+        }
+
+        Err(anyhow!("git merge origin/main failed: {}", stderr))
+    }
+
+    /// List files with conflict markers in a worktree.
+    fn list_conflicted_files_in(worktree_path: &Path) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to list conflicted files")?;
+
+        let files = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        Ok(files)
+    }
+
     /// Rebase the worktree onto origin/main.
     pub fn rebase_onto_main(&self, worktree_path: &Path) -> Result<RebaseResult> {
         info!(path = %worktree_path.display(), "Rebasing onto origin/main");
@@ -344,6 +447,29 @@ impl WorktreeManager {
             .output();
     }
 
+    /// Force-push the worktree's current branch to origin (with --force-with-lease).
+    /// Used after merging origin/main during conflict rework to update the remote branch
+    /// so GitHub re-evaluates the PR's mergeability.
+    pub fn force_push_branch(&self, worktree_path: &Path) -> Result<()> {
+        let branch = self.get_current_branch(worktree_path)?;
+
+        info!(path = %worktree_path.display(), branch = %branch, "Force-pushing branch to origin with --force-with-lease");
+
+        let output = Command::new("git")
+            .args(["push", "origin", &branch, "--force-with-lease"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to force-push branch")?;
+
+        if output.status.success() {
+            info!(path = %worktree_path.display(), branch = %branch, "Force-push succeeded");
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(anyhow!("Force-push failed: {}", stderr))
+        }
+    }
+
     fn delete_branch_if_exists(&self, branch_name: &str) {
         let output = Command::new("git")
             .args(["branch", "-D"])
@@ -391,6 +517,15 @@ pub enum RebaseResult {
     Success,
     /// Rebase has conflicts that need resolution
     Conflict,
+}
+
+/// Result of a merge origin/main operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeMainResult {
+    /// Merge completed cleanly — no conflicts
+    Clean,
+    /// Merge produced conflict markers that need resolution
+    Conflict { conflicted_files: Vec<String> },
 }
 
 #[cfg(test)]

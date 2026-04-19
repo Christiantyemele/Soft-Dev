@@ -8,7 +8,7 @@ use config::{
     KEY_TICKETS, KEY_WORKER_SLOTS,
 };
 use pair_harness::WorkspaceManager;
-use pocketflow_core::{Flow, SharedStore};
+use pocketflow_core::{Action, Flow, SharedStore};
 use std::sync::Arc;
 use tracing::info;
 
@@ -47,6 +47,8 @@ async fn main() -> Result<()> {
     let workspace_dir = workspace_manager.ensure_workspace(&github_token).await?;
 
     info!(workspace = %workspace_dir.display(), "Target repository workspace ready");
+
+    std::env::set_var("AGENTFLOW_WORKSPACE_ROOT", &workspace_dir);
 
     // Set ORCHESTRATOR_DIR so pair harness can find the plugin
     // This is needed because the workspace is a separate cloned repo
@@ -101,6 +103,7 @@ async fn main() -> Result<()> {
                 (ACTION_PR_OPENED, "vessel"),
                 (ACTION_FAILED, "nexus"),
                 ("suspended", "nexus"),
+                (Action::NO_TICKETS, "nexus"),
             ],
         )
         .add_node(

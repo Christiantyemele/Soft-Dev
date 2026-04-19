@@ -289,6 +289,22 @@ impl GithubRestClient {
             anyhow::bail!("GitHub update-branch error {}: {}", status, body)
         }
     }
+
+    pub async fn list_conflicted_files(&self, owner: &str, repo: &str, pr_number: u64) -> Result<Vec<String>> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/files",
+            GITHUB_API_BASE, owner, repo, pr_number
+        );
+
+        let resp: Vec<PrFileResponse> = self.get_json(&url).await?;
+        let conflicted: Vec<String> = resp
+            .into_iter()
+            .filter(|f| f.status == "modified" || f.status == "added" || f.status == "renamed")
+            .map(|f| f.filename)
+            .collect();
+
+        Ok(conflicted)
+    }
 }
 
 // ── Helper Functions ──────────────────────────────────────────────────────
@@ -376,4 +392,10 @@ struct MergeResponse {
 #[derive(Deserialize)]
 struct ContentEntry {
     name: String,
+}
+
+#[derive(Deserialize)]
+struct PrFileResponse {
+    filename: String,
+    status: String,
 }

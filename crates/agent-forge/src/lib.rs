@@ -704,7 +704,19 @@ impl ForgePairNode {
 
         if !push_output.status.success() {
             let stderr = String::from_utf8_lossy(&push_output.stderr);
-            if !stderr.contains("already exists") && !stderr.contains("up-to-date") {
+            if stderr.contains("non-fast-forward") || stderr.contains("rejected") || stderr.contains("fetch first") {
+                info!(worker = worker_id, branch = %branch_name, "Normal push rejected — force-pushing with --force-with-lease");
+                let force_push = StdCommand::new("git")
+                    .args(["push", "-u", "origin", &branch_name, "--force-with-lease"])
+                    .current_dir(&worktree_path)
+                    .output()
+                    .context("Failed to force-push branch")?;
+
+                if !force_push.status.success() {
+                    let force_stderr = String::from_utf8_lossy(&force_push.stderr);
+                    return Err(anyhow!("Failed to force-push branch: {}", force_stderr));
+                }
+            } else if !stderr.contains("already exists") && !stderr.contains("up-to-date") {
                 return Err(anyhow!("Failed to push branch: {}", stderr));
             }
         }
@@ -713,6 +725,37 @@ impl ForgePairNode {
         let (owner, repo_name) = repo_str
             .split_once('/')
             .unwrap_or(("The-AgenticFlow", "template-counterapp"));
+
+        let client = reqwest::Client::new();
+
+        let existing_pr_url = format!(
+            "https://api.github.com/repos/{}/{}/pulls?head={}:{}&state=open",
+            owner, repo_name, owner, branch_name
+        );
+        let list_resp = client
+            .get(&existing_pr_url)
+            .header("Authorization", format!("Bearer {}", self.github_token))
+            .header("User-Agent", "agentflow-forge")
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await?;
+
+        if list_resp.status().is_success() {
+            let prs: Vec<serde_json::Value> = list_resp.json().await.unwrap_or_default();
+            if let Some(pr) = prs.first() {
+                let pr_url = pr["html_url"].as_str().unwrap_or_default().to_string();
+                let pr_number = pr["number"].as_u64().unwrap_or(0);
+                if pr_number > 0 {
+                    info!(
+                        worker = worker_id,
+                        pr_number,
+                        branch = %branch_name,
+                        "Found existing open PR for branch — updating instead of creating new"
+                    );
+                    return Ok((pr_url, pr_number, branch_name));
+                }
+            }
+        }
 
         let pr_title = format!("[{}] {}", ticket_id, ticket_title);
         let pr_body = format!(

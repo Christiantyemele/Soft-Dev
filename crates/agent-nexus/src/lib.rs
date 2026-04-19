@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use config::{
     state::{KEY_COMMAND_GATE, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS},
-    ACTION_MERGE_PRS, ACTION_NO_WORK, ACTION_WORK_ASSIGNED, Registry, Ticket, TicketStatus,
+    ACTION_MERGE_PRS, ACTION_NO_WORK, Registry, Ticket, TicketStatus,
     WorkerSlot, WorkerStatus,
 };
 use pocketflow_core::{node::STOP_SIGNAL, Action, Node, SharedStore};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 const NO_WORK_THRESHOLD: u32 = 3;
 const KEY_NO_WORK_COUNT: &str = "_no_work_count";
@@ -193,19 +193,38 @@ impl NexusNode {
             .collect();
 
         let mut new_prs = Vec::new();
+        let tickets: Vec<Ticket> =
+            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+
         for pr in &gh_prs {
             if !known_numbers.contains(&pr.number) {
-                let already_awaiting = pending_prs.iter().any(|p| {
-                    p["number"].as_u64() == Some(pr.number)
-                        && p["conflict_status"].as_str() == Some("awaiting_rework")
-                });
-                if already_awaiting {
-                    debug!(
-                        pr_number = pr.number,
-                        "PR already tracked as awaiting rework — skipping re-add"
-                    );
-                    continue;
+                if let Some(ref tid) = pr.ticket_id {
+                    let already_tracked = pending_prs.iter().any(|p| {
+                        p["ticket_id"].as_str() == Some(tid.as_str())
+                    });
+                    if already_tracked {
+                        info!(
+                            pr_number = pr.number,
+                            ticket_id = %tid,
+                            "Duplicate PR for ticket already in pending_prs — skipping (only one PR per ticket tracked)"
+                        );
+                        continue;
+                    }
+
+                    if let Some(ticket) = tickets.iter().find(|t| t.id == *tid) {
+                        if let TicketStatus::Failed { reason, .. } = &ticket.status {
+                            if reason.contains("Merge conflicts") || reason.contains("merge conflict") || reason.contains("conflict rework") {
+                                info!(
+                                    pr_number = pr.number,
+                                    ticket_id = %tid,
+                                    "Skipping re-add of PR for ticket with merge conflict failure — worker will be assigned for rework"
+                                );
+                                continue;
+                            }
+                        }
+                    }
                 }
+
                 info!(
                     pr_number = pr.number,
                     ticket_id = ?pr.ticket_id,
@@ -255,8 +274,28 @@ impl NexusNode {
                 if let Some(ref tid) = pr.ticket_id {
                     if let Some(ticket) = tickets.iter_mut().find(|t| t.id == *tid) {
                         match &ticket.status {
-                            TicketStatus::Failed { .. }
-                            | TicketStatus::Open
+                            TicketStatus::Failed { reason, .. } => {
+                                if reason.contains("Merge conflicts") || reason.contains("merge conflict") || reason.contains("conflict rework") {
+                                    info!(
+                                        ticket_id = tid,
+                                        pr_number = pr.number,
+                                        "Ticket has merge conflict failure — NOT overriding to Completed, retaining Failed for rework assignment"
+                                    );
+                                } else {
+                                    info!(
+                                        ticket_id = tid,
+                                        pr_number = pr.number,
+                                        old_status = ?ticket.status,
+                                        "Ticket has open PR but non-conflict failure — correcting to Completed(pr_opened)"
+                                    );
+                                    ticket.status = TicketStatus::Completed {
+                                        worker_id: String::from("nexus-reconciliation"),
+                                        outcome: "pr_opened".to_string(),
+                                    };
+                                    tickets_changed = true;
+                                }
+                            }
+                            TicketStatus::Open
                             | TicketStatus::Assigned { .. }
                             | TicketStatus::Exhausted { .. } => {
                                 info!(
@@ -721,7 +760,14 @@ impl Node for NexusNode {
                 store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
 
             if pending_prs.is_empty() {
-                info!("merge_prs action but no open PRs — reassigning to work assignment");
+                let tickets: Vec<Ticket> =
+                    store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                let has_assignable = tickets.iter().any(|t| t.is_assignable());
+                if has_assignable {
+                    info!("merge_prs action but no open PRs — assignable tickets exist, falling through to work assignment");
+                } else {
+                    info!("merge_prs action but no open PRs and no assignable tickets — no work");
+                }
                 return Ok(Action::new(ACTION_NO_WORK));
             }
 
@@ -838,52 +884,6 @@ impl Node for NexusNode {
                 }
                 store.set(KEY_WORKER_SLOTS, json!(slots)).await;
             }
-        }
-
-        if decision.action == "conflicts_detected" {
-            store.set(KEY_NO_WORK_COUNT, json!(0)).await;
-
-            let pending_prs: Vec<Value> =
-                store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
-
-            for pr in &pending_prs {
-                let pr_number = pr["number"].as_u64().unwrap_or(0);
-                if pr_number == 0 {
-                    continue;
-                }
-                let has_conflicts = pr["has_conflicts"].as_bool().unwrap_or(false);
-                if !has_conflicts {
-                    continue;
-                }
-
-                let ticket_id = pr["ticket_id"].as_str().unwrap_or("");
-                if ticket_id.is_empty() {
-                    continue;
-                }
-
-                info!(
-                    ticket_id,
-                    pr_number,
-                    "Resetting conflicting ticket to Open for forge rework"
-                );
-
-                let mut tickets: Vec<Ticket> =
-                    store.get_typed(KEY_TICKETS).await.unwrap_or_default();
-                if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
-                    ticket.status = TicketStatus::Open;
-                    ticket.attempts += 1;
-                }
-                store.set(KEY_TICKETS, json!(tickets)).await;
-            }
-
-            let assignable_tickets: Vec<Ticket> =
-                store.get_typed(KEY_TICKETS).await.unwrap_or_default();
-            let has_assignable = assignable_tickets.iter().any(|t| t.is_assignable());
-
-            if has_assignable {
-                return Ok(Action::new(ACTION_WORK_ASSIGNED));
-            }
-            return Ok(Action::new(ACTION_NO_WORK));
         }
 
         Ok(Action::new(decision.action))

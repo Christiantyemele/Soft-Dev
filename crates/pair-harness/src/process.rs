@@ -713,11 +713,13 @@ impl ProcessManager {
             PR CREATION STEPS:\n\
             1. Ensure all changes committed: 'git status' then commit if needed\n\
             2. Push branch: 'git push -u origin HEAD'\n\
+               If push is rejected (non-fast-forward), use 'git push --force-with-lease -u origin HEAD'\n\
             3. Create PR using GitHub MCP create_pull_request:\n\
                - title: from CONTRACT summary\n\
                - body: include SENTINEL's PR description and CERTIFICATION\n\
                - head: current branch\n\
                - base: 'main'\n\
+               If a PR already exists for this branch, do NOT create a new one — just update STATUS.json with the existing PR info.\n\
             4. Write {}/STATUS.json:\n\
                {{\n\
                  \"status\": \"PR_OPENED\",\n\
