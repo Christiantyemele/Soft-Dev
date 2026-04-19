@@ -573,14 +573,12 @@ impl NexusNode {
                         });
                     }
                 }
-                TicketStatus::Completed { outcome, .. } => {
-                    if outcome == "pr_opened" {
-                        let has_pending = pending_prs.iter().any(|pr| {
-                            pr.get("ticket_id").and_then(|v| v.as_str()) == Some(&ticket.id)
-                        });
-                        if !has_pending {
-                            recovery.completed_without_pr.push(ticket.id.clone());
-                        }
+                TicketStatus::Completed { outcome, .. } if outcome == "pr_opened" => {
+                    let has_pending = pending_prs
+                        .iter()
+                        .any(|pr| pr.get("ticket_id").and_then(|v| v.as_str()) == Some(&ticket.id));
+                    if !has_pending {
+                        recovery.completed_without_pr.push(ticket.id.clone());
                     }
                 }
                 _ => {}
