@@ -75,11 +75,10 @@ impl FallbackClient {
 
     fn build(model_override: Option<&str>) -> Result<Self> {
         let proxy_active = proxy_is_configured();
-        
+
         info!(
             proxy_active,
-            model_override,
-            "Building fallback client chain"
+            model_override, "Building fallback client chain"
         );
 
         if proxy_active {
@@ -93,7 +92,7 @@ impl FallbackClient {
         let mut clients: Vec<Box<dyn LlmClient>> = Vec::new();
         let model = model_override.unwrap_or("claude-haiku-4-5-20251001");
 
-        let mapped_provider = model_override.and_then(|m| resolve_provider_for_model(m));
+        let mapped_provider = model_override.and_then(resolve_provider_for_model);
 
         info!(
             model = model,
@@ -102,27 +101,27 @@ impl FallbackClient {
         );
 
         match mapped_provider.as_deref() {
-            Some("openai") => {
-                match OpenAiClient::from_proxy(model) {
-                    Ok(c) => {
-                        info!(provider = "openai-proxy", model = %c.model(), "Proxy client initialized");
-                        clients.push(Box::new(c));
-                    }
-                    Err(e) => warn!(provider = "openai-proxy", error = %e, "Failed to init proxy client"),
+            Some("openai") => match OpenAiClient::from_proxy(model) {
+                Ok(c) => {
+                    info!(provider = "openai-proxy", model = %c.model(), "Proxy client initialized");
+                    clients.push(Box::new(c));
                 }
-            }
+                Err(e) => {
+                    warn!(provider = "openai-proxy", error = %e, "Failed to init proxy client")
+                }
+            },
             Some("gemini") => {
                 warn!("Gemini proxy format not yet supported, falling back to Anthropic format");
             }
-            _ => {
-                match AnthropicClient::from_env_with_model(model) {
-                    Ok(c) => {
-                        info!(provider = "anthropic-proxy", model = %c.model(), "Proxy client initialized");
-                        clients.push(Box::new(c));
-                    }
-                    Err(e) => warn!(provider = "anthropic-proxy", error = %e, "Failed to init proxy client"),
+            _ => match AnthropicClient::from_env_with_model(model) {
+                Ok(c) => {
+                    info!(provider = "anthropic-proxy", model = %c.model(), "Proxy client initialized");
+                    clients.push(Box::new(c));
                 }
-            }
+                Err(e) => {
+                    warn!(provider = "anthropic-proxy", error = %e, "Failed to init proxy client")
+                }
+            },
         }
 
         // --- 2. Direct-key fallbacks ---
@@ -172,17 +171,17 @@ impl FallbackClient {
     /// Build client chain for direct mode.
     /// Requires individual API keys for each provider.
     fn build_direct_chain(model_override: Option<&str>) -> Result<Self> {
-        let fallback_order = std::env::var("LLM_FALLBACK")
-            .unwrap_or_else(|_| "anthropic,gemini,openai".to_string());
+        let fallback_order =
+            std::env::var("LLM_FALLBACK").unwrap_or_else(|_| "anthropic,gemini,openai".to_string());
 
         let provider_names: Vec<&str> = fallback_order.split(',').map(|s| s.trim()).collect();
 
         let mut clients: Vec<Box<dyn LlmClient>> = Vec::new();
 
         // If model is mapped to a specific provider, prepend it to the chain
-        let mapped_provider = model_override.and_then(|m| resolve_provider_for_model(m));
+        let mapped_provider = model_override.and_then(resolve_provider_for_model);
         if let Some(ref provider) = mapped_provider {
-            if !provider_names.iter().any(|&p| p == provider.as_str()) {
+            if !provider_names.contains(&provider.as_str()) {
                 info!(
                     model = model_override.unwrap_or(""),
                     mapped_provider = %provider,
@@ -226,64 +225,66 @@ impl FallbackClient {
     fn try_init_provider(name: &str, model_override: Option<&str>) -> Option<Box<dyn LlmClient>> {
         // Check if API key is available
         if !has_api_key_for_provider(name) {
-            warn!(
-                provider = name,
-                "Skipping provider - API key not set"
-            );
+            warn!(provider = name, "Skipping provider - API key not set");
             return None;
         }
 
-        let result: Option<Box<dyn LlmClient>> = match name {
-            "proxy" => {
-                let client = match model_override {
-                    Some(m) => AnthropicClient::from_env_with_model(m),
-                    None => AnthropicClient::from_env(),
-                };
-                client.map(|c| {
+        let result: Option<Box<dyn LlmClient>> =
+            match name {
+                "proxy" => {
+                    let client = match model_override {
+                        Some(m) => AnthropicClient::from_env_with_model(m),
+                        None => AnthropicClient::from_env(),
+                    };
+                    client.map(|c| {
                     info!(provider = name, model = %c.model(), "Client initialized (proxy)");
                     Box::new(c) as Box<dyn LlmClient>
                 }).ok()
-            }
-            "openai-proxy" => {
-                let default_model =
-                    std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-                let model = model_override.unwrap_or(&default_model);
-                OpenAiClient::from_proxy(model).map(|c| {
+                }
+                "openai-proxy" => {
+                    let default_model =
+                        std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                    let model = model_override.unwrap_or(&default_model);
+                    OpenAiClient::from_proxy(model).map(|c| {
                     info!(provider = name, model = %c.model(), "Client initialized (openai-proxy)");
                     Box::new(c) as Box<dyn LlmClient>
                 }).ok()
-            }
-            "anthropic" => {
-                let client = match model_override {
-                    Some(m) => AnthropicClient::from_env_with_model(m),
-                    None => AnthropicClient::from_env(),
-                };
-                client.map(|c| {
-                    info!(provider = name, model = %c.model(), "Client initialized");
-                    Box::new(c) as Box<dyn LlmClient>
-                }).ok()
-            }
-            "gemini" => {
-                GeminiClient::from_env().map(|c| {
-                    info!(provider = name, model = %c.model(), "Client initialized");
-                    Box::new(c) as Box<dyn LlmClient>
-                }).ok()
-            }
-            "openai" => {
-                let client = match model_override {
-                    Some(m) => OpenAiClient::from_env_with_model(m),
-                    None => OpenAiClient::from_env(),
-                };
-                client.map(|c| {
-                    info!(provider = name, model = %c.model(), "Client initialized");
-                    Box::new(c) as Box<dyn LlmClient>
-                }).ok()
-            }
-            other => {
-                warn!(provider = other, "Unknown provider, skipping");
-                None
-            }
-        };
+                }
+                "anthropic" => {
+                    let client = match model_override {
+                        Some(m) => AnthropicClient::from_env_with_model(m),
+                        None => AnthropicClient::from_env(),
+                    };
+                    client
+                        .map(|c| {
+                            info!(provider = name, model = %c.model(), "Client initialized");
+                            Box::new(c) as Box<dyn LlmClient>
+                        })
+                        .ok()
+                }
+                "gemini" => GeminiClient::from_env()
+                    .map(|c| {
+                        info!(provider = name, model = %c.model(), "Client initialized");
+                        Box::new(c) as Box<dyn LlmClient>
+                    })
+                    .ok(),
+                "openai" => {
+                    let client = match model_override {
+                        Some(m) => OpenAiClient::from_env_with_model(m),
+                        None => OpenAiClient::from_env(),
+                    };
+                    client
+                        .map(|c| {
+                            info!(provider = name, model = %c.model(), "Client initialized");
+                            Box::new(c) as Box<dyn LlmClient>
+                        })
+                        .ok()
+                }
+                other => {
+                    warn!(provider = other, "Unknown provider, skipping");
+                    None
+                }
+            };
 
         if let Some(ref client) = result {
             info!(provider = name, model = %client.model(), "Provider initialized successfully");
@@ -367,13 +368,25 @@ mod tests {
 
     #[test]
     fn test_resolve_provider_for_model() {
-        std::env::set_var("MODEL_PROVIDER_MAP", "glm=openai,gpt=openai,claude=anthropic");
-        
-        assert_eq!(resolve_provider_for_model("glm-5"), Some("openai".to_string()));
-        assert_eq!(resolve_provider_for_model("gpt-4o"), Some("openai".to_string()));
-        assert_eq!(resolve_provider_for_model("claude-3"), Some("anthropic".to_string()));
+        std::env::set_var(
+            "MODEL_PROVIDER_MAP",
+            "glm=openai,gpt=openai,claude=anthropic",
+        );
+
+        assert_eq!(
+            resolve_provider_for_model("glm-5"),
+            Some("openai".to_string())
+        );
+        assert_eq!(
+            resolve_provider_for_model("gpt-4o"),
+            Some("openai".to_string())
+        );
+        assert_eq!(
+            resolve_provider_for_model("claude-3"),
+            Some("anthropic".to_string())
+        );
         assert_eq!(resolve_provider_for_model("unknown-model"), None);
-        
+
         std::env::remove_var("MODEL_PROVIDER_MAP");
     }
 
@@ -382,11 +395,11 @@ mod tests {
         std::env::remove_var("ANTHROPIC_API_KEY");
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("GEMINI_API_KEY");
-        
+
         assert!(!has_api_key_for_provider("anthropic"));
         assert!(!has_api_key_for_provider("openai"));
         assert!(!has_api_key_for_provider("gemini"));
-        
+
         std::env::set_var("ANTHROPIC_API_KEY", "test-key");
         assert!(has_api_key_for_provider("anthropic"));
         std::env::remove_var("ANTHROPIC_API_KEY");

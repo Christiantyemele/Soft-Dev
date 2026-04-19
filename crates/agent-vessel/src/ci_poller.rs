@@ -42,9 +42,7 @@ impl CiPoller {
             if attempts >= self.config.max_attempts {
                 warn!(
                     pr = pr_info.number,
-                    attempts,
-                    "CI polling timed out after {} attempts",
-                    attempts
+                    attempts, "CI polling timed out after {} attempts", attempts
                 );
                 return Ok(CiPollResult::Timeout);
             }
@@ -61,7 +59,7 @@ impl CiPoller {
                 return Ok(CiPollResult::Status(status));
             }
 
-            if attempts % MERGEABLE_CHECK_INTERVAL == 0 {
+            if attempts.is_multiple_of(MERGEABLE_CHECK_INTERVAL) {
                 let mergeable = self.check_mergeability(owner, repo, pr_info).await?;
                 if mergeable == Some(false) {
                     warn!(
@@ -91,7 +89,10 @@ impl CiPoller {
         repo: &str,
         pr_info: &PrInfo,
     ) -> Result<Option<bool>> {
-        let fresh_pr = self.client.get_pull_request(owner, repo, pr_info.number).await?;
+        let fresh_pr = self
+            .client
+            .get_pull_request(owner, repo, pr_info.number)
+            .await?;
         Ok(fresh_pr.mergeable)
     }
 }
@@ -113,7 +114,10 @@ impl CiPollResult {
     }
 
     pub fn is_failure(&self) -> bool {
-        matches!(self, CiPollResult::Status(CiStatus::Failure | CiStatus::Error))
+        matches!(
+            self,
+            CiPollResult::Status(CiStatus::Failure | CiStatus::Error)
+        )
     }
 
     pub fn is_timeout(&self) -> bool {

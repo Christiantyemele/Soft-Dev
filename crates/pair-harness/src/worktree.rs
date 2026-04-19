@@ -1,7 +1,8 @@
 // crates/pair-harness/src/worktree.rs
 //! Git worktree management for pair isolation.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, info, warn};
@@ -114,8 +115,38 @@ impl WorktreeManager {
         Ok(worktree_path)
     }
 
-    /// Remove a worktree and its associated branch by pair_id and ticket_id.
-    pub fn remove_worktree(&self, pair_id: &str, ticket_id: &str) -> Result<()> {
+    /// Remove a worktree and its associated branch by pair_id.
+    /// Backward-compatible: scans worktrees_dir for a directory starting with `pair_id`.
+    pub fn remove_worktree(&self, pair_id: &str) -> Result<()> {
+        let matching: Vec<std::fs::DirEntry> = fs::read_dir(&self.worktrees_dir)
+            .context("Failed to read worktrees directory")?
+            .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok())
+            .filter(|e: &std::fs::DirEntry| {
+                e.file_name()
+                    .to_str()
+                    .map(|n: &str| n.starts_with(&format!("{}-", pair_id)))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if matching.is_empty() {
+            bail!("No worktree found for pair {}", pair_id);
+        }
+
+        for entry in matching {
+            let worktree_path = entry.path();
+            let dir_name = entry.file_name().to_str().unwrap_or("").to_string();
+            let ticket_id = dir_name
+                .strip_prefix(&format!("{}-", pair_id))
+                .unwrap_or("unknown");
+            let branch_name = Self::branch_name(pair_id, ticket_id);
+            self.remove_worktree_by_path(&worktree_path, &branch_name)?;
+        }
+        Ok(())
+    }
+
+    /// Remove a specific worktree by pair_id and ticket_id.
+    pub fn remove_worktree_for_ticket(&self, pair_id: &str, ticket_id: &str) -> Result<()> {
         let worktree_path = self
             .worktrees_dir
             .join(format!("{}-{}", pair_id, ticket_id));

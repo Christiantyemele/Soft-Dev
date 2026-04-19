@@ -41,13 +41,19 @@ impl ConflictResolver {
         // Strategy 1: GitHub "update branch" API
         match self.client.update_branch(owner, repo, pr_info.number).await {
             Ok(()) => {
-                info!(pr = pr_info.number, "Branch updated via GitHub API — conflicts resolved cleanly");
+                info!(
+                    pr = pr_info.number,
+                    "Branch updated via GitHub API — conflicts resolved cleanly"
+                );
                 return Ok(ConflictResolution::Resolved);
             }
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("Merge conflict") || msg.contains("merge conflict") {
-                    info!(pr = pr_info.number, "GitHub update-branch confirmed conflicts — need local resolution");
+                    info!(
+                        pr = pr_info.number,
+                        "GitHub update-branch confirmed conflicts — need local resolution"
+                    );
                 } else {
                     warn!(pr = pr_info.number, error = %e, "GitHub update-branch failed — trying local rebase");
                 }
@@ -70,11 +76,7 @@ impl ConflictResolver {
     }
 
     /// Perform a local git rebase onto origin/main in the worktree.
-    async fn local_rebase(
-        &self,
-        worktree_path: &Path,
-        branch: &str,
-    ) -> Result<ConflictResolution> {
+    async fn local_rebase(&self, worktree_path: &Path, branch: &str) -> Result<ConflictResolution> {
         info!(
             path = %worktree_path.display(),
             branch,
@@ -136,7 +138,9 @@ impl ConflictResolver {
             "Rebase has conflicts that require intelligent resolution"
         );
 
-        Ok(ConflictResolution::NeedsIntelligentResolution { conflicted_files: conflicted })
+        Ok(ConflictResolution::NeedsIntelligentResolution {
+            conflicted_files: conflicted,
+        })
     }
 
     /// List files with conflict markers from an in-progress rebase/merge.
@@ -199,11 +203,17 @@ mod tests {
         let needs_llm = ConflictResolution::NeedsIntelligentResolution {
             conflicted_files: vec!["src/main.rs".to_string()],
         };
-        assert!(matches!(needs_llm, ConflictResolution::NeedsIntelligentResolution { .. }));
+        assert!(matches!(
+            needs_llm,
+            ConflictResolution::NeedsIntelligentResolution { .. }
+        ));
 
         let unresolvable = ConflictResolution::Unresolvable {
             conflicted_files: vec!["src/lib.rs".to_string()],
         };
-        assert!(matches!(unresolvable, ConflictResolution::Unresolvable { .. }));
+        assert!(matches!(
+            unresolvable,
+            ConflictResolution::Unresolvable { .. }
+        ));
     }
 }

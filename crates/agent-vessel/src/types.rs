@@ -15,13 +15,10 @@ pub enum CiReadiness {
 }
 
 /// Configuration for the VESSEL agent.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct VesselConfig {
-    /// CI polling configuration
     pub ci_poll: CiPollConfig,
-    /// Default merge method for PRs
     pub merge_method: MergeMethod,
-    /// GitHub token for API access
     pub github_token: String,
 }
 
@@ -34,16 +31,6 @@ impl VesselConfig {
             ci_poll: CiPollConfig::default(),
             merge_method: MergeMethod::default(),
             github_token,
-        }
-    }
-}
-
-impl Default for VesselConfig {
-    fn default() -> Self {
-        Self {
-            ci_poll: CiPollConfig::default(),
-            merge_method: MergeMethod::default(),
-            github_token: String::new(),
         }
     }
 }

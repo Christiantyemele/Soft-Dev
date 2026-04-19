@@ -7,9 +7,9 @@
 // via MCP subprocess; this handles direct REST calls for VESSEL's needs.
 
 use anyhow::{Context, Result};
+use pocketflow_core::{CiStatus, MergeMethod, MergeResult, PrInfo, PrState};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
-use pocketflow_core::{CiStatus, MergeMethod, MergeResult, PrInfo, PrState};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
@@ -53,10 +53,16 @@ impl GithubRestClient {
             anyhow::bail!("GitHub API error {}: {}", status, body);
         }
 
-        resp.json::<T>().await.with_context(|| format!("Failed to parse GitHub response from {}", url))
+        resp.json::<T>()
+            .await
+            .with_context(|| format!("Failed to parse GitHub response from {}", url))
     }
 
-    async fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(&self, url: &str, body: &B) -> Result<T> {
+    async fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T> {
         debug!(url, "GitHub API PUT");
         let resp = self
             .client
@@ -75,25 +81,43 @@ impl GithubRestClient {
             anyhow::bail!("GitHub API error {}: {}", status, body);
         }
 
-        resp.json::<T>().await.context("Failed to parse GitHub response")
+        resp.json::<T>()
+            .await
+            .context("Failed to parse GitHub response")
     }
 
     // ── CI Status Polling ────────────────────────────────────────────────
 
     /// Get combined CI status for a commit ref.
     /// Returns the aggregated status across all status contexts.
-    pub async fn get_combined_status(&self, owner: &str, repo: &str, ref_sha: &str) -> Result<CiStatus> {
-        let url = format!("{}/repos/{}/{}/commits/{}/status", GITHUB_API_BASE, owner, repo, ref_sha);
+    pub async fn get_combined_status(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_sha: &str,
+    ) -> Result<CiStatus> {
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}/status",
+            GITHUB_API_BASE, owner, repo, ref_sha
+        );
         let resp: CombinedStatusResponse = self.get_json(&url).await?;
         Ok(map_status_state(&resp.state))
     }
 
     /// Get check suites for a commit ref.
     /// Returns the aggregated status across all check runs.
-    pub async fn get_check_suites_status(&self, owner: &str, repo: &str, ref_sha: &str) -> Result<CiStatus> {
-        let url = format!("{}/repos/{}/{}/commits/{}/check-suites", GITHUB_API_BASE, owner, repo, ref_sha);
+    pub async fn get_check_suites_status(
+        &self,
+        owner: &str,
+        repo: &str,
+        ref_sha: &str,
+    ) -> Result<CiStatus> {
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}/check-suites",
+            GITHUB_API_BASE, owner, repo, ref_sha
+        );
         let resp: CheckSuitesResponse = self.get_json(&url).await?;
-        
+
         if resp.check_suites.is_empty() {
             return Ok(CiStatus::Success);
         }
@@ -102,12 +126,12 @@ impl GithubRestClient {
         for suite in &resp.check_suites {
             match suite.status.as_str() {
                 "queued" | "in_progress" | "pending" => has_pending = true,
-                "completed" => {
-                    if suite.conclusion.as_deref() == Some("failure") 
+                "completed"
+                    if suite.conclusion.as_deref() == Some("failure")
                         || suite.conclusion.as_deref() == Some("timed_out")
-                        || suite.conclusion.as_deref() == Some("cancelled") {
-                        return Ok(CiStatus::Failure);
-                    }
+                        || suite.conclusion.as_deref() == Some("cancelled") =>
+                {
+                    return Ok(CiStatus::Failure);
                 }
                 _ => {}
             }
@@ -142,10 +166,18 @@ impl GithubRestClient {
     // ── PR Operations ─────────────────────────────────────────────────────
 
     /// Get PR details including head SHA and state.
-    pub async fn get_pull_request(&self, owner: &str, repo: &str, pr_number: u64) -> Result<PrInfo> {
-        let url = format!("{}/repos/{}/{}/pulls/{}", GITHUB_API_BASE, owner, repo, pr_number);
+    pub async fn get_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<PrInfo> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            GITHUB_API_BASE, owner, repo, pr_number
+        );
         let resp: PullRequestResponse = self.get_json(&url).await?;
-        
+
         Ok(PrInfo {
             number: resp.number,
             head_sha: resp.head.sha,
@@ -171,15 +203,18 @@ impl GithubRestClient {
         commit_title: &str,
         merge_method: MergeMethod,
     ) -> Result<MergeResult> {
-        let url = format!("{}/repos/{}/{}/pulls/{}/merge", GITHUB_API_BASE, owner, repo, pr_number);
-        
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/merge",
+            GITHUB_API_BASE, owner, repo, pr_number
+        );
+
         let body = MergeRequestBody {
             commit_title: Some(commit_title.to_string()),
             merge_method,
         };
 
         let resp: MergeResponse = self.put_json(&url, &body).await?;
-        
+
         Ok(MergeResult {
             merged: resp.merged,
             sha: resp.sha,
@@ -216,10 +251,13 @@ impl GithubRestClient {
             return Ok(false);
         }
 
-        let entries: Vec<ContentEntry> = resp.json().await.context("Failed to parse contents response")?;
-        let has_yml = entries.iter().any(|e| {
-            e.name.ends_with(".yml") || e.name.ends_with(".yaml")
-        });
+        let entries: Vec<ContentEntry> = resp
+            .json()
+            .await
+            .context("Failed to parse contents response")?;
+        let has_yml = entries
+            .iter()
+            .any(|e| e.name.ends_with(".yml") || e.name.ends_with(".yaml"));
         Ok(has_yml)
     }
 
@@ -283,14 +321,22 @@ impl GithubRestClient {
         } else if status.as_u16() == 409 {
             anyhow::bail!("Merge conflict when updating branch for PR {}", pr_number)
         } else if status.as_u16() == 422 {
-            anyhow::bail!("Update branch not available for PR {} — may require admin access", pr_number)
+            anyhow::bail!(
+                "Update branch not available for PR {} — may require admin access",
+                pr_number
+            )
         } else {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("GitHub update-branch error {}: {}", status, body)
         }
     }
 
-    pub async fn list_conflicted_files(&self, owner: &str, repo: &str, pr_number: u64) -> Result<Vec<String>> {
+    pub async fn list_conflicted_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<String>> {
         let url = format!(
             "{}/repos/{}/{}/pulls/{}/files",
             GITHUB_API_BASE, owner, repo, pr_number

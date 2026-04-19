@@ -277,6 +277,7 @@ pub struct StatusJson {
 /// Test results summary.
 /// FORGE may write structured counts or arbitrary key-value data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TestResults {
     #[serde(default)]
     pub passed: u32,
@@ -326,6 +327,7 @@ impl Default for TimeoutProfile {
 
 /// Contract status written by SENTINEL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Contract {
     /// Status: AGREED or ISSUES
     pub status: String,

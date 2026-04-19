@@ -318,7 +318,9 @@ impl BatchNode for ForgeNode {
                             }));
                         }
 
-                        if let Err(e) = worktree_mgr.remove_worktree(worker_id, ticket_id) {
+                        if let Err(e) =
+                            worktree_mgr.remove_worktree_for_ticket(worker_id, ticket_id)
+                        {
                             warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
                         } else {
                             info!(worker = worker_id, "Worktree cleaned up");
@@ -373,7 +375,9 @@ impl BatchNode for ForgeNode {
                                 },
                             ));
                         }
-                        if let Err(e) = worktree_mgr.remove_worktree(worker_id, ticket_id) {
+                        if let Err(e) =
+                            worktree_mgr.remove_worktree_for_ticket(worker_id, ticket_id)
+                        {
                             warn!(worker = worker_id, error = %e, "Failed to cleanup worktree");
                         } else {
                             info!(worker = worker_id, "Worktree cleaned up");
@@ -655,11 +659,17 @@ impl ForgePairNode {
         use anyhow::Context as _;
         use std::process::Command as StdCommand;
 
-        let worktree_path = self.workspace_root.join("worktrees").join(format!("{}-{}", worker_id, ticket_id));
+        let worktree_path = self
+            .workspace_root
+            .join("worktrees")
+            .join(format!("{}-{}", worker_id, ticket_id));
         let branch_name = WorktreeManager::branch_name(worker_id, ticket_id);
 
         if !worktree_path.exists() {
-            return Err(anyhow!("Worktree does not exist at {}", worktree_path.display()));
+            return Err(anyhow!(
+                "Worktree does not exist at {}",
+                worktree_path.display()
+            ));
         }
 
         let has_changes = StdCommand::new("git")
@@ -670,7 +680,10 @@ impl ForgePairNode {
             .unwrap_or(false);
 
         if has_changes {
-            info!(worker = worker_id, "Committing uncommitted changes before push");
+            info!(
+                worker = worker_id,
+                "Committing uncommitted changes before push"
+            );
             StdCommand::new("git")
                 .args(["add", "-A"])
                 .current_dir(&worktree_path)
@@ -678,7 +691,11 @@ impl ForgePairNode {
                 .context("Failed to git add")?;
 
             StdCommand::new("git")
-                .args(["commit", "-m", &format!("{}: complete implementation", ticket_id)])
+                .args([
+                    "commit",
+                    "-m",
+                    &format!("{}: complete implementation", ticket_id),
+                ])
                 .current_dir(&worktree_path)
                 .output()
                 .context("Failed to git commit")?;
@@ -704,7 +721,10 @@ impl ForgePairNode {
 
         if !push_output.status.success() {
             let stderr = String::from_utf8_lossy(&push_output.stderr);
-            if stderr.contains("non-fast-forward") || stderr.contains("rejected") || stderr.contains("fetch first") {
+            if stderr.contains("non-fast-forward")
+                || stderr.contains("rejected")
+                || stderr.contains("fetch first")
+            {
                 info!(worker = worker_id, branch = %branch_name, "Normal push rejected — force-pushing with --force-with-lease");
                 let force_push = StdCommand::new("git")
                     .args(["push", "-u", "origin", &branch_name, "--force-with-lease"])
@@ -762,7 +782,11 @@ impl ForgePairNode {
             "## {}\n\nResolves #{}\n\n---\n\n### Implementation\n\n{}",
             ticket_title,
             ticket_id.trim_start_matches("T-0").trim_start_matches('0'),
-            if ticket_body.is_empty() { "See ticket for details.".to_string() } else { ticket_body.to_string() }
+            if ticket_body.is_empty() {
+                "See ticket for details.".to_string()
+            } else {
+                ticket_body.to_string()
+            }
         );
 
         info!(owner, repo_name, branch = %branch_name, "Creating PR via GitHub API");
@@ -775,7 +799,10 @@ impl ForgePairNode {
         });
 
         let resp = client
-            .post(format!("https://api.github.com/repos/{}/{}/pulls", owner, repo_name))
+            .post(format!(
+                "https://api.github.com/repos/{}/{}/pulls",
+                owner, repo_name
+            ))
             .header("Authorization", format!("Bearer {}", self.github_token))
             .header("User-Agent", "agentflow-forge")
             .header("Accept", "application/vnd.github+json")
@@ -913,13 +940,9 @@ impl BatchNode for ForgePairNode {
                         ticket = ticket_id,
                         "Work complete but no PR - attempting to push and create PR via GitHub API"
                     );
-                    match self.push_and_create_pr(
-                        &worker_id,
-                        &ticket_id,
-                        &ticket.title,
-                        &ticket.body,
-                    )
-                    .await
+                    match self
+                        .push_and_create_pr(&worker_id, &ticket_id, &ticket.title, &ticket.body)
+                        .await
                     {
                         Ok((pr_url, pr_number, branch)) => {
                             info!(
@@ -1041,7 +1064,7 @@ impl BatchNode for ForgePairNode {
                                 outcome: "pr_opened".to_string(),
                             },
                         ));
-                        
+
                         // Add PR to pending_prs for VESSEL
                         let pr_number = res["pr_number"].as_u64().unwrap_or(0);
                         let branch = res["branch"].as_str().unwrap_or("");
@@ -1052,11 +1075,7 @@ impl BatchNode for ForgePairNode {
                                 "branch": branch,
                                 "worker_id": worker_id,
                             }));
-                            info!(
-                                pr_number,
-                                ticket_id,
-                                "Added PR to pending_prs for VESSEL"
-                            );
+                            info!(pr_number, ticket_id, "Added PR to pending_prs for VESSEL");
                         }
                     }
                     "blocked" => {
@@ -1256,7 +1275,7 @@ impl BatchNode for ForgePairNode {
         store.set(KEY_WORKER_SLOTS, json!(slots)).await;
         store.set(KEY_COMMAND_GATE, json!(command_gate)).await;
         store.set(KEY_TICKETS, json!(tickets)).await;
-        
+
         let has_prs = !opened_prs.is_empty();
         if has_prs {
             let mut pending_prs: Vec<Value> =

@@ -4,8 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use config::{
     state::{KEY_COMMAND_GATE, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS},
-    ACTION_MERGE_PRS, ACTION_NO_WORK, Registry, Ticket, TicketStatus,
-    WorkerSlot, WorkerStatus,
+    Registry, Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_MERGE_PRS, ACTION_NO_WORK,
 };
 use pocketflow_core::{node::STOP_SIGNAL, Action, Node, SharedStore};
 use serde::{Deserialize, Serialize};
@@ -39,7 +38,9 @@ fn has_ci_setup_ticket(tickets: &[Ticket]) -> bool {
 }
 
 fn ci_setup_ticket_active(tickets: &[Ticket]) -> bool {
-    tickets.iter().any(|t| is_ci_setup_ticket(t) && t.is_assignable())
+    tickets
+        .iter()
+        .any(|t| is_ci_setup_ticket(t) && t.is_assignable())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -192,15 +193,14 @@ impl NexusNode {
             .collect();
 
         let mut new_prs = Vec::new();
-        let tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
         for pr in &gh_prs {
             if !known_numbers.contains(&pr.number) {
                 if let Some(ref tid) = pr.ticket_id {
-                    let already_tracked = pending_prs.iter().any(|p| {
-                        p["ticket_id"].as_str() == Some(tid.as_str())
-                    });
+                    let already_tracked = pending_prs
+                        .iter()
+                        .any(|p| p["ticket_id"].as_str() == Some(tid.as_str()));
                     if already_tracked {
                         info!(
                             pr_number = pr.number,
@@ -212,7 +212,10 @@ impl NexusNode {
 
                     if let Some(ticket) = tickets.iter().find(|t| t.id == *tid) {
                         if let TicketStatus::Failed { reason, .. } = &ticket.status {
-                            if reason.contains("Merge conflicts") || reason.contains("merge conflict") || reason.contains("conflict rework") {
+                            if reason.contains("Merge conflicts")
+                                || reason.contains("merge conflict")
+                                || reason.contains("conflict rework")
+                            {
                                 info!(
                                     pr_number = pr.number,
                                     ticket_id = %tid,
@@ -252,21 +255,23 @@ impl NexusNode {
             }
             let still_open = gh_prs.iter().any(|gh| gh.number == pr_num);
             if !still_open {
-                info!(pr_number = pr_num, "PR no longer open on GitHub — removing from pending_prs");
+                info!(
+                    pr_number = pr_num,
+                    "PR no longer open on GitHub — removing from pending_prs"
+                );
             }
             still_open
         });
 
-        let prs_changed = pending_prs.len() != known_numbers.len()
-            || pending_prs.len() != before_count;
+        let prs_changed =
+            pending_prs.len() != known_numbers.len() || pending_prs.len() != before_count;
 
         if prs_changed {
             store.set(KEY_PENDING_PRS, json!(pending_prs)).await;
         }
 
         if !new_prs.is_empty() {
-            let mut tickets: Vec<Ticket> =
-                store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+            let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
             let mut tickets_changed = false;
 
             for pr in &new_prs {
@@ -274,7 +279,10 @@ impl NexusNode {
                     if let Some(ticket) = tickets.iter_mut().find(|t| t.id == *tid) {
                         match &ticket.status {
                             TicketStatus::Failed { reason, .. } => {
-                                if reason.contains("Merge conflicts") || reason.contains("merge conflict") || reason.contains("conflict rework") {
+                                if reason.contains("Merge conflicts")
+                                    || reason.contains("merge conflict")
+                                    || reason.contains("conflict rework")
+                                {
                                     info!(
                                         ticket_id = tid,
                                         pr_number = pr.number,
@@ -406,7 +414,12 @@ impl NexusNode {
         }
     }
 
-    fn ensure_ci_setup_ticket(&self, _store: &SharedStore, tickets: &mut Vec<Ticket>, readiness: &CiReadiness) {
+    fn ensure_ci_setup_ticket(
+        &self,
+        _store: &SharedStore,
+        tickets: &mut Vec<Ticket>,
+        readiness: &CiReadiness,
+    ) {
         if !matches!(readiness, CiReadiness::Missing) {
             return;
         }
@@ -433,17 +446,18 @@ impl NexusNode {
         });
     }
 
-    fn prioritize_ci_first(tickets: &mut Vec<Ticket>) {
+    fn prioritize_ci_first(tickets: &mut [Ticket]) {
         tickets.sort_by(|a, b| {
             let a_is_ci = is_ci_setup_ticket(a) as u8;
             let b_is_ci = is_ci_setup_ticket(b) as u8;
-            b_is_ci.cmp(&a_is_ci).then_with(|| a.priority.cmp(&b.priority))
+            b_is_ci
+                .cmp(&a_is_ci)
+                .then_with(|| a.priority.cmp(&b.priority))
         });
     }
 
     async fn recover_orphans(store: &SharedStore) -> Result<()> {
-        let mut tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
         let mut slots: HashMap<String, WorkerSlot> =
             store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
         let mut changed_tickets = false;
@@ -451,17 +465,15 @@ impl NexusNode {
 
         for ticket in tickets.iter_mut() {
             match &ticket.status {
-                TicketStatus::Assigned { worker_id }
-                | TicketStatus::InProgress { worker_id } => {
-                    let worker_idle = slots.get(worker_id).map_or(true, |s| {
-                        matches!(s.status, WorkerStatus::Idle)
-                    });
+                TicketStatus::Assigned { worker_id } | TicketStatus::InProgress { worker_id } => {
+                    let worker_idle = slots
+                        .get(worker_id)
+                        .is_none_or(|s| matches!(s.status, WorkerStatus::Idle));
                     let worker_missing = !slots.contains_key(worker_id);
                     if worker_idle || worker_missing {
                         info!(
                             ticket_id = ticket.id,
-                            worker_id,
-                            "Recovering orphaned ticket — resetting to Open"
+                            worker_id, "Recovering orphaned ticket — resetting to Open"
                         );
                         ticket.status = TicketStatus::Open;
                         changed_tickets = true;
@@ -493,9 +505,9 @@ impl NexusNode {
                 }
                 WorkerStatus::Assigned { ticket_id, .. }
                 | WorkerStatus::Working { ticket_id, .. } => {
-                    let ticket_open = tickets.iter().any(|t| {
-                        t.id == *ticket_id && matches!(t.status, TicketStatus::Open)
-                    });
+                    let ticket_open = tickets
+                        .iter()
+                        .any(|t| t.id == *ticket_id && matches!(t.status, TicketStatus::Open));
                     if ticket_open {
                         info!(
                             worker_id = slot.id,
@@ -514,7 +526,9 @@ impl NexusNode {
             store.set(KEY_TICKETS, json!(tickets)).await;
         }
         if changed_slots {
-            store.set(KEY_WORKER_SLOTS, serde_json::to_value(slots)?).await;
+            store
+                .set(KEY_WORKER_SLOTS, serde_json::to_value(slots)?)
+                .await;
         }
 
         Ok(())
@@ -531,9 +545,9 @@ impl NexusNode {
             if let Some(obj) = pr.as_object() {
                 let pr_number = obj.get("number").and_then(|v| v.as_u64());
                 let ticket_id = obj.get("ticket_id").and_then(|v| v.as_str());
-                if pr_number.is_some() {
+                if let Some(pr_num) = pr_number {
                     recovery.unmerged_prs.push(UnmergedPr {
-                        pr_number: pr_number.unwrap(),
+                        pr_number: pr_num,
                         ticket_id: ticket_id.map(|s| s.to_string()),
                     });
                 }
@@ -542,12 +556,11 @@ impl NexusNode {
 
         for ticket in tickets {
             match &ticket.status {
-                TicketStatus::Assigned { worker_id }
-                | TicketStatus::InProgress { worker_id } => {
+                TicketStatus::Assigned { worker_id } | TicketStatus::InProgress { worker_id } => {
                     let worker_exists = worker_slots.contains_key(worker_id);
-                    let worker_idle = worker_slots.get(worker_id).map_or(false, |s| {
-                        matches!(s.status, WorkerStatus::Idle)
-                    });
+                    let worker_idle = worker_slots
+                        .get(worker_id)
+                        .is_some_and(|s| matches!(s.status, WorkerStatus::Idle));
                     if !worker_exists || worker_idle {
                         recovery.orphaned_tickets.push(OrphanedTicket {
                             ticket_id: ticket.id.clone(),
@@ -657,16 +670,14 @@ impl Node for NexusNode {
         let ci_readiness = self.check_ci_readiness(store, &owner, &repo_name).await;
         store.set(KEY_CI_READINESS, json!(ci_readiness)).await;
 
-        let mut tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
         self.ensure_ci_setup_ticket(store, &mut tickets, &ci_readiness);
         Self::prioritize_ci_first(&mut tickets);
 
         store.set(KEY_TICKETS, json!(tickets)).await;
 
-        let tickets: Vec<Ticket> =
-            store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
         let has_assignable = tickets.iter().any(|t| t.is_assignable());
 
@@ -677,7 +688,10 @@ impl Node for NexusNode {
         if has_assignable {
             for slot in worker_slots.values_mut() {
                 if matches!(slot.status, WorkerStatus::Done { .. }) {
-                    info!(worker_id = slot.id, "Recycling Done worker to Idle — assignable tickets exist");
+                    info!(
+                        worker_id = slot.id,
+                        "Recycling Done worker to Idle — assignable tickets exist"
+                    );
                     slot.status = WorkerStatus::Idle;
                     recycled = true;
                 }
@@ -711,7 +725,10 @@ impl Node for NexusNode {
                 && ci_setup_ticket_active(&tickets));
 
         let assignable_tickets: Vec<&Ticket> = if ci_must_go_first {
-            tickets.iter().filter(|t| is_ci_setup_ticket(t) && t.is_assignable()).collect()
+            tickets
+                .iter()
+                .filter(|t| is_ci_setup_ticket(t) && t.is_assignable())
+                .collect()
         } else {
             tickets.iter().filter(|t| t.is_assignable()).collect()
         };
@@ -759,8 +776,7 @@ impl Node for NexusNode {
                 store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
 
             if pending_prs.is_empty() {
-                let tickets: Vec<Ticket> =
-                    store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
                 let has_assignable = tickets.iter().any(|t| t.is_assignable());
                 if has_assignable {
                     info!("merge_prs action but no open PRs — assignable tickets exist, falling through to work assignment");
@@ -819,7 +835,9 @@ impl Node for NexusNode {
 
                     if ticket_id.starts_with("T-CI-") {
                         info!("CI setup ticket assigned — marking CI readiness as in-progress");
-                        store.set(KEY_CI_READINESS, json!(CiReadiness::SetupInProgress)).await;
+                        store
+                            .set(KEY_CI_READINESS, json!(CiReadiness::SetupInProgress))
+                            .await;
                     }
 
                     let mut slots: HashMap<String, WorkerSlot> =

@@ -202,13 +202,19 @@ impl LlmClient for AnthropicClient {
             .context("HTTP request to Anthropic API failed")?;
 
         let status = resp.status();
-        let raw_text = resp.text().await.context("Failed to read Anthropic response body")?;
+        let raw_text = resp
+            .text()
+            .await
+            .context("Failed to read Anthropic response body")?;
         let truncation_len = raw_text.len().min(500);
         let truncation_len = raw_text.floor_char_boundary(truncation_len);
         debug!(stop_reason = %raw_text.len(), status = %status, body = %&raw_text[..truncation_len], "← Anthropic raw response");
 
-        let raw: Value = serde_json::from_str(&raw_text)
-            .context(format!("Failed to parse Anthropic response (status={}, body={})", status, &raw_text[..truncation_len]))?;
+        let raw: Value = serde_json::from_str(&raw_text).context(format!(
+            "Failed to parse Anthropic response (status={}, body={})",
+            status,
+            &raw_text[..truncation_len]
+        ))?;
 
         if !status.is_success() {
             bail!(

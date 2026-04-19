@@ -437,7 +437,21 @@ impl ProcessManager {
     }
 
     /// Spawn a SENTINEL process (ephemeral, for single evaluation).
+    /// Backward-compatible overload using default timeout.
     pub async fn spawn_sentinel(
+        &self,
+        pair_id: &str,
+        ticket_id: &str,
+        mode: SentinelMode,
+        worktree: &Path,
+        shared: &Path,
+    ) -> Result<Child> {
+        self.spawn_sentinel_with_timeout(pair_id, ticket_id, mode, worktree, shared, 300)
+            .await
+    }
+
+    /// Spawn a SENTINEL process with an explicit timeout.
+    pub async fn spawn_sentinel_with_timeout(
         &self,
         pair_id: &str,
         ticket_id: &str,

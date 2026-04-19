@@ -6,8 +6,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use config::{
-    state::{KEY_TICKETS, KEY_WORKER_SLOTS, KEY_PENDING_PRS},
-    ACTION_CONFLICTS_DETECTED, Ticket, TicketStatus, WorkerSlot, WorkerStatus,
+    state::{KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS},
+    Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CONFLICTS_DETECTED,
 };
 use pocketflow_core::{Action, CiStatus, Node, PrInfo, SharedStore};
 use serde_json::{json, Value};
@@ -65,9 +65,11 @@ impl VesselNode {
         }
         let pair_id = parts[0];
         let ticket_id = parts[1];
-        Some(PathBuf::from(workspace_root)
-            .join("worktrees")
-            .join(format!("{}-{}", pair_id, ticket_id)))
+        Some(
+            PathBuf::from(workspace_root)
+                .join("worktrees")
+                .join(format!("{}-{}", pair_id, ticket_id)),
+        )
     }
 }
 
@@ -89,13 +91,11 @@ impl Node for VesselNode {
 
         let has_ci_workflows = match ci_readiness {
             Some(crate::types::CiReadiness::Ready) => true,
-            Some(crate::types::CiReadiness::Missing) | Some(crate::types::CiReadiness::SetupInProgress) => false,
+            Some(crate::types::CiReadiness::Missing)
+            | Some(crate::types::CiReadiness::SetupInProgress) => false,
             None => {
                 if !owner.is_empty() && !repo.is_empty() {
-                    match self.client.has_workflows(owner, repo).await {
-                        Ok(has) => has,
-                        Err(_) => true,
-                    }
+                    self.client.has_workflows(owner, repo).await.unwrap_or(true)
                 } else {
                     true
                 }
@@ -114,7 +114,10 @@ impl Node for VesselNode {
     async fn exec(&self, prep_result: Value) -> Result<Value> {
         let owner = prep_result["owner"].as_str().unwrap_or("");
         let repo = prep_result["repo"].as_str().unwrap_or("");
-        let pending_prs = prep_result["pending_prs"].as_array().cloned().unwrap_or_default();
+        let pending_prs = prep_result["pending_prs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         let has_ci_workflows = prep_result["has_ci_workflows"].as_bool().unwrap_or(true);
 
         if pending_prs.is_empty() {
@@ -122,7 +125,10 @@ impl Node for VesselNode {
             return Ok(json!({ "outcomes": [], "has_work": false }));
         }
 
-        info!(count = pending_prs.len(), has_ci_workflows, "Processing pending PRs");
+        info!(
+            count = pending_prs.len(),
+            has_ci_workflows, "Processing pending PRs"
+        );
 
         let mut outcomes = Vec::new();
 
@@ -135,7 +141,7 @@ impl Node for VesselNode {
             }
 
             debug!(pr_number, "Fetching PR details");
-            
+
             let pr_info = match self.client.get_pull_request(owner, repo, pr_number).await {
                 Ok(info) => info,
                 Err(e) => {
@@ -145,7 +151,10 @@ impl Node for VesselNode {
             };
 
             let outcome = if !has_ci_workflows {
-                warn!(pr_number, "No CI workflows configured — treating as success and alerting NEXUS");
+                warn!(
+                    pr_number,
+                    "No CI workflows configured — treating as success and alerting NEXUS"
+                );
                 self.merge_without_ci(owner, repo, pr_info).await?
             } else {
                 self.process_single_pr(owner, repo, pr_info).await?
@@ -161,8 +170,8 @@ impl Node for VesselNode {
 
     /// Phase 3: Emit events, update SharedStore, recycle workers, return routing action.
     async fn post(&self, store: &SharedStore, exec_result: Value) -> Result<Action> {
-        let outcomes: Vec<VesselOutcome> = serde_json::from_value(exec_result["outcomes"].clone())
-            .unwrap_or_default();
+        let outcomes: Vec<VesselOutcome> =
+            serde_json::from_value(exec_result["outcomes"].clone()).unwrap_or_default();
         let has_work = exec_result["has_work"].as_bool().unwrap_or(false);
 
         if !has_work {
@@ -179,68 +188,130 @@ impl Node for VesselNode {
 
         for outcome in outcomes {
             match &outcome {
-                VesselOutcome::Merged { ticket_id, pr_number, sha } => {
+                VesselOutcome::Merged {
+                    ticket_id,
+                    pr_number,
+                    sha,
+                } => {
                     VesselNotifier::emit_ticket_merged(store, ticket_id, *pr_number, sha).await;
                     VesselNotifier::set_ticket_status_merged(store, ticket_id).await;
-                    
+
                     self.update_ticket_status(store, ticket_id, "merged").await;
                     self.remove_from_pending_prs(store, *pr_number).await;
 
-                    if let Some(pr) = pending_prs.iter().find(|p| p["number"].as_u64() == Some(*pr_number)) {
+                    if let Some(pr) = pending_prs
+                        .iter()
+                        .find(|p| p["number"].as_u64() == Some(*pr_number))
+                    {
                         self.recycle_worker(store, pr).await;
                     }
-                    
+
                     any_success = true;
                 }
-                VesselOutcome::CiFailed { ticket_id, pr_number, reason } => {
-                    VesselNotifier::emit_ci_failed(store, ticket_id.as_deref(), *pr_number, reason).await;
-                    let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
+                VesselOutcome::CiFailed {
+                    ticket_id,
+                    pr_number,
+                    reason,
+                } => {
+                    VesselNotifier::emit_ci_failed(store, ticket_id.as_deref(), *pr_number, reason)
+                        .await;
+                    let tid = ticket_id
+                        .clone()
+                        .unwrap_or_else(|| format!("T-{}", pr_number));
                     if !failed_ticket_ids.contains(&tid) {
-                        self.mark_ticket_failed(store, &tid, &format!("CI failed for PR #{}", pr_number)).await;
+                        self.mark_ticket_failed(
+                            store,
+                            &tid,
+                            &format!("CI failed for PR #{}", pr_number),
+                        )
+                        .await;
                         failed_ticket_ids.push(tid);
                     }
                     self.remove_from_pending_prs(store, *pr_number).await;
                     any_failure = true;
                 }
-                VesselOutcome::MergeBlocked { ticket_id, pr_number, reason } => {
-                    VesselNotifier::emit_merge_blocked(store, ticket_id.as_deref(), *pr_number, reason).await;
-                    let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
+                VesselOutcome::MergeBlocked {
+                    ticket_id,
+                    pr_number,
+                    reason,
+                } => {
+                    VesselNotifier::emit_merge_blocked(
+                        store,
+                        ticket_id.as_deref(),
+                        *pr_number,
+                        reason,
+                    )
+                    .await;
+                    let tid = ticket_id
+                        .clone()
+                        .unwrap_or_else(|| format!("T-{}", pr_number));
                     if !failed_ticket_ids.contains(&tid) {
-                        self.mark_ticket_failed(store, &tid, &format!("Merge blocked for PR #{}: {}", pr_number, reason)).await;
+                        self.mark_ticket_failed(
+                            store,
+                            &tid,
+                            &format!("Merge blocked for PR #{}: {}", pr_number, reason),
+                        )
+                        .await;
                         failed_ticket_ids.push(tid);
                     }
                     self.remove_from_pending_prs(store, *pr_number).await;
                     any_failure = true;
                 }
-                VesselOutcome::CiTimeout { ticket_id, pr_number } => {
+                VesselOutcome::CiTimeout {
+                    ticket_id,
+                    pr_number,
+                } => {
                     VesselNotifier::emit_ci_timeout(store, ticket_id.as_deref(), *pr_number).await;
-                    let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
+                    let tid = ticket_id
+                        .clone()
+                        .unwrap_or_else(|| format!("T-{}", pr_number));
                     if !failed_ticket_ids.contains(&tid) {
-                        self.mark_ticket_failed(store, &tid, &format!("CI timed out for PR #{}", pr_number)).await;
+                        self.mark_ticket_failed(
+                            store,
+                            &tid,
+                            &format!("CI timed out for PR #{}", pr_number),
+                        )
+                        .await;
                         failed_ticket_ids.push(tid);
                     }
                     self.remove_from_pending_prs(store, *pr_number).await;
                     any_failure = true;
                 }
-                VesselOutcome::CiMissing { ticket_id, pr_number } => {
+                VesselOutcome::CiMissing {
+                    ticket_id,
+                    pr_number,
+                } => {
                     VesselNotifier::emit_ci_missing(store, ticket_id.as_deref(), *pr_number).await;
-                    let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
+                    let tid = ticket_id
+                        .clone()
+                        .unwrap_or_else(|| format!("T-{}", pr_number));
                     VesselNotifier::emit_ticket_merged(store, &tid, *pr_number, "").await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
-                    
+
                     self.update_ticket_status(store, &tid, "merged_no_ci").await;
                     self.remove_from_pending_prs(store, *pr_number).await;
 
-                    if let Some(pr) = pending_prs.iter().find(|p| p["number"].as_u64() == Some(*pr_number)) {
+                    if let Some(pr) = pending_prs
+                        .iter()
+                        .find(|p| p["number"].as_u64() == Some(*pr_number))
+                    {
                         self.recycle_worker(store, pr).await;
                     }
-                    
+
                     any_success = true;
                 }
-                VesselOutcome::Conflicts { ticket_id, pr_number, conflicted_files } => {
-                    let tid = ticket_id.clone().unwrap_or_else(|| format!("T-{}", pr_number));
+                VesselOutcome::Conflicts {
+                    ticket_id,
+                    pr_number,
+                    conflicted_files,
+                } => {
+                    let tid = ticket_id
+                        .clone()
+                        .unwrap_or_else(|| format!("T-{}", pr_number));
 
-                    let current_attempts = self.get_conflict_resolution_attempts(store, *pr_number).await;
+                    let current_attempts = self
+                        .get_conflict_resolution_attempts(store, *pr_number)
+                        .await;
 
                     if current_attempts >= MAX_CONFLICT_RESOLUTION_ATTEMPTS {
                         warn!(
@@ -254,7 +325,8 @@ impl Node for VesselNode {
                             ticket_id.as_deref(),
                             *pr_number,
                             conflicted_files,
-                        ).await;
+                        )
+                        .await;
                         self.mark_ticket_failed(
                             store,
                             &tid,
@@ -262,7 +334,8 @@ impl Node for VesselNode {
                                 "Merge conflicts on PR #{} not resolved after {} attempts",
                                 pr_number, current_attempts
                             ),
-                        ).await;
+                        )
+                        .await;
                         self.remove_from_pending_prs(store, *pr_number).await;
                         any_failure = true;
                         continue;
@@ -273,7 +346,8 @@ impl Node for VesselNode {
                         ticket_id.as_deref(),
                         *pr_number,
                         conflicted_files,
-                    ).await;
+                    )
+                    .await;
 
                     let worker_id = pending_prs
                         .iter()
@@ -283,11 +357,14 @@ impl Node for VesselNode {
                             if !wid.is_empty() {
                                 return Some(wid.to_string());
                             }
-                            Self::derive_worker_id_from_branch(pr["head_branch"].as_str().unwrap_or(""))
+                            Self::derive_worker_id_from_branch(
+                                pr["head_branch"].as_str().unwrap_or(""),
+                            )
                         });
 
                     let worker_reassigned = if let Some(ref wid) = worker_id {
-                        self.assign_worker_for_conflict_rework(store, wid, &tid).await;
+                        self.assign_worker_for_conflict_rework(store, wid, &tid)
+                            .await;
                         true
                     } else {
                         false
@@ -296,7 +373,8 @@ impl Node for VesselNode {
                     self.remove_from_pending_prs(store, *pr_number).await;
 
                     if worker_reassigned {
-                        self.increment_conflict_resolution_attempts(store, *pr_number).await;
+                        self.increment_conflict_resolution_attempts(store, *pr_number)
+                            .await;
                         any_conflicts = true;
                     } else {
                         warn!(
@@ -304,7 +382,15 @@ impl Node for VesselNode {
                             ticket_id = %tid,
                             "No worker available for conflict rework — marking ticket as failed"
                         );
-                        self.mark_ticket_failed(store, &tid, &format!("Merge conflicts on PR #{} — no worker available for rework", pr_number)).await;
+                        self.mark_ticket_failed(
+                            store,
+                            &tid,
+                            &format!(
+                                "Merge conflicts on PR #{} — no worker available for rework",
+                                pr_number
+                            ),
+                        )
+                        .await;
                         any_failure = true;
                     }
                 }
@@ -325,13 +411,21 @@ impl Node for VesselNode {
 
 impl VesselNode {
     /// Process a single PR: poll CI → detect conflicts → resolve if possible → merge if green → return outcome.
-    async fn process_single_pr(&self, owner: &str, repo: &str, pr_info: PrInfo) -> Result<VesselOutcome> {
+    async fn process_single_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_info: PrInfo,
+    ) -> Result<VesselOutcome> {
         let ticket_id = pr_info.ticket_id.clone();
         let pr_number = pr_info.number;
 
         info!(pr_number, ticket_id = ?ticket_id, "Processing PR");
 
-        let poll_result = self.poller.poll_until_terminal(owner, repo, &pr_info).await?;
+        let poll_result = self
+            .poller
+            .poll_until_terminal(owner, repo, &pr_info)
+            .await?;
 
         match poll_result {
             CiPollResult::Status(CiStatus::Success) => {
@@ -359,15 +453,24 @@ impl VesselNode {
                 reason: format!("CI status: {:?}", status),
             }),
             CiPollResult::Conflicts => {
-                warn!(pr_number, "Merge conflicts detected during CI poll — attempting resolution");
+                warn!(
+                    pr_number,
+                    "Merge conflicts detected during CI poll — attempting resolution"
+                );
                 self.handle_conflicts(owner, repo, pr_info).await
             }
             CiPollResult::Timeout => {
-                warn!(pr_number, "CI timed out — checking for conflicts as likely cause");
+                warn!(
+                    pr_number,
+                    "CI timed out — checking for conflicts as likely cause"
+                );
                 let fresh_pr = self.client.get_pull_request(owner, repo, pr_number).await;
                 if let Ok(ref info) = fresh_pr {
                     if info.has_conflicts() {
-                        warn!(pr_number, "Conflicts found after timeout — treating as conflict case");
+                        warn!(
+                            pr_number,
+                            "Conflicts found after timeout — treating as conflict case"
+                        );
                         return self.handle_conflicts(owner, repo, fresh_pr.unwrap()).await;
                     }
                 }
@@ -376,8 +479,14 @@ impl VesselNode {
                         ticket_id,
                         pr_number,
                     }),
-                    Ok(_result) => Ok(VesselOutcome::CiTimeout { ticket_id, pr_number }),
-                    Err(_) => Ok(VesselOutcome::CiTimeout { ticket_id, pr_number }),
+                    Ok(_result) => Ok(VesselOutcome::CiTimeout {
+                        ticket_id,
+                        pr_number,
+                    }),
+                    Err(_) => Ok(VesselOutcome::CiTimeout {
+                        ticket_id,
+                        pr_number,
+                    }),
                 }
             }
         }
@@ -395,11 +504,16 @@ impl VesselNode {
 
         let conflicted_files = match &worktree_path {
             Some(wt) => {
-                self.merge_origin_main_in_worktree(wt, &pr_info.head_branch).await
+                self.merge_origin_main_in_worktree(wt, &pr_info.head_branch)
+                    .await
             }
             None => {
-                warn!(pr_number, "No worktree path — cannot merge origin/main locally");
-                self.fetch_conflicted_files_from_github(owner, repo, &pr_info).await
+                warn!(
+                    pr_number,
+                    "No worktree path — cannot merge origin/main locally"
+                );
+                self.fetch_conflicted_files_from_github(owner, repo, &pr_info)
+                    .await
             }
         };
 
@@ -407,7 +521,9 @@ impl VesselNode {
             let _ = ConflictResolver::abort_rebase(wt).await;
         }
 
-        let resolution_md_written = self.write_conflict_resolution_md(&pr_info, &conflicted_files).await;
+        let resolution_md_written = self
+            .write_conflict_resolution_md(&pr_info, &conflicted_files)
+            .await;
 
         if resolution_md_written {
             info!(
@@ -470,21 +586,36 @@ impl VesselNode {
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if stderr.contains("refusing to merge unrelated histories") {
-                    warn!(branch, "Unrelated histories — retrying with --allow-unrelated-histories");
+                    warn!(
+                        branch,
+                        "Unrelated histories — retrying with --allow-unrelated-histories"
+                    );
                     let retry = tokio::process::Command::new("git")
-                        .args(["merge", "origin/main", "--no-edit", "--allow-unrelated-histories"])
+                        .args([
+                            "merge",
+                            "origin/main",
+                            "--no-edit",
+                            "--allow-unrelated-histories",
+                        ])
                         .current_dir(worktree_path)
                         .output()
                         .await;
 
                     return match retry {
                         Ok(o) if o.status.success() => {
-                            info!(branch, "origin/main merged cleanly with --allow-unrelated-histories");
+                            info!(
+                                branch,
+                                "origin/main merged cleanly with --allow-unrelated-histories"
+                            );
                             vec![]
                         }
                         Ok(_) => {
                             let files = self.list_conflicted_files(worktree_path).await;
-                            info!(branch, files = files.len(), "Merge with --allow-unrelated-histories produced conflict markers");
+                            info!(
+                                branch,
+                                files = files.len(),
+                                "Merge with --allow-unrelated-histories produced conflict markers"
+                            );
                             files
                         }
                         Err(e) => {
@@ -494,7 +625,11 @@ impl VesselNode {
                     };
                 }
                 let files = self.list_conflicted_files(worktree_path).await;
-                info!(branch, files = files.len(), "Merge produced conflict markers in worktree");
+                info!(
+                    branch,
+                    files = files.len(),
+                    "Merge produced conflict markers in worktree"
+                );
                 files
             }
             Err(e) => {
@@ -514,7 +649,8 @@ impl VesselNode {
         match output {
             Ok(o) => {
                 let stdout = String::from_utf8_lossy(&o.stdout);
-                stdout.lines()
+                stdout
+                    .lines()
                     .map(|l| l.trim().to_string())
                     .filter(|l| !l.is_empty())
                     .collect()
@@ -529,7 +665,11 @@ impl VesselNode {
         repo: &str,
         pr_info: &PrInfo,
     ) -> Vec<String> {
-        match self.client.list_conflicted_files(owner, repo, pr_info.number).await {
+        match self
+            .client
+            .list_conflicted_files(owner, repo, pr_info.number)
+            .await
+        {
             Ok(files) => files,
             Err(e) => {
                 warn!(pr = pr_info.number, error = %e, "Failed to fetch conflicted files from GitHub");
@@ -554,7 +694,10 @@ impl VesselNode {
         let branch = &pr_info.head_branch;
         let parts: Vec<&str> = branch.splitn(2, '/').collect();
         if parts.len() != 2 {
-            warn!(branch, "Cannot parse branch for pair_id — skipping CONFLICT_RESOLUTION.md");
+            warn!(
+                branch,
+                "Cannot parse branch for pair_id — skipping CONFLICT_RESOLUTION.md"
+            );
             return false;
         }
         let pair_id = parts[0];
@@ -568,7 +711,8 @@ impl VesselNode {
         let files_list = if conflicted_files.is_empty() {
             "No specific conflicted files detected — resolve all conflict markers.".to_string()
         } else {
-            conflicted_files.iter()
+            conflicted_files
+                .iter()
                 .map(|f| format!("- {}", f))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -606,7 +750,12 @@ impl VesselNode {
 
     /// Merge a PR without CI validation (no CI workflows configured).
     /// Still attempts the merge but emits a ci_missing event to alert NEXUS.
-    async fn merge_without_ci(&self, owner: &str, repo: &str, pr_info: PrInfo) -> Result<VesselOutcome> {
+    async fn merge_without_ci(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_info: PrInfo,
+    ) -> Result<VesselOutcome> {
         let ticket_id = pr_info.ticket_id.clone();
         let pr_number = pr_info.number;
 
@@ -633,14 +782,14 @@ impl VesselNode {
     /// Update ticket status in SharedStore.
     async fn update_ticket_status(&self, store: &SharedStore, ticket_id: &str, status: &str) {
         let mut tickets: Vec<Value> = store.get_typed("tickets").await.unwrap_or_default();
-        
+
         for ticket in tickets.iter_mut() {
             if ticket["id"].as_str() == Some(ticket_id) {
                 ticket["status"] = json!({ "type": status });
                 break;
             }
         }
-        
+
         store.set(KEY_TICKETS, json!(tickets)).await;
     }
 
@@ -740,12 +889,20 @@ impl VesselNode {
         if let Some(slot) = slots.get_mut(worker_id) {
             let issue_url = match &slot.status {
                 WorkerStatus::Done { ticket_id: tid, .. } => {
-                    let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
-                    tickets.iter().find(|t| t.id == *tid).and_then(|t| t.issue_url.clone())
+                    let tickets: Vec<Ticket> =
+                        store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                    tickets
+                        .iter()
+                        .find(|t| t.id == *tid)
+                        .and_then(|t| t.issue_url.clone())
                 }
                 WorkerStatus::Idle => {
-                    let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
-                    tickets.iter().find(|t| t.id == ticket_id).and_then(|t| t.issue_url.clone())
+                    let tickets: Vec<Ticket> =
+                        store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+                    tickets
+                        .iter()
+                        .find(|t| t.id == ticket_id)
+                        .and_then(|t| t.issue_url.clone())
                 }
                 _ => None,
             };
@@ -763,8 +920,7 @@ impl VesselNode {
         } else {
             warn!(
                 worker_id,
-                ticket_id,
-                "Worker slot not found — cannot assign for conflict rework"
+                ticket_id, "Worker slot not found — cannot assign for conflict rework"
             );
         }
     }
@@ -787,13 +943,16 @@ impl VesselNode {
 
             if self.client.is_pr_merged(owner, repo, pr_number).await? {
                 warn!(pr_number, "Found already-merged PR during reconciliation");
-                
+
                 let ticket_id = pr["ticket_id"].as_str().map(String::from);
                 let pr_info = self.client.get_pull_request(owner, repo, pr_number).await;
-                
+
                 if let Ok(info) = pr_info {
-                    let tid = ticket_id.or(info.ticket_id).unwrap_or_else(|| format!("T-{}", pr_number));
-                    VesselNotifier::emit_ticket_merged(store, &tid, pr_number, &info.head_sha).await;
+                    let tid = ticket_id
+                        .or(info.ticket_id)
+                        .unwrap_or_else(|| format!("T-{}", pr_number));
+                    VesselNotifier::emit_ticket_merged(store, &tid, pr_number, &info.head_sha)
+                        .await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
                     self.remove_from_pending_prs(store, pr_number).await;
                 }
@@ -833,16 +992,21 @@ mod tests {
     async fn test_prep_reads_pending_prs() {
         let store = SharedStore::new_in_memory();
         store.set("repository", json!("test-owner/test-repo")).await;
-        store.set("pending_prs", json!([
-            {"number": 1, "ticket_id": "T-1"},
-            {"number": 2, "ticket_id": "T-2"},
-        ])).await;
+        store
+            .set(
+                "pending_prs",
+                json!([
+                    {"number": 1, "ticket_id": "T-1"},
+                    {"number": 2, "ticket_id": "T-2"},
+                ]),
+            )
+            .await;
 
         let config = VesselConfig::default();
         let node = VesselNode::new(config);
 
         let result = node.prep(&store).await.unwrap();
-        
+
         assert_eq!(result["owner"], "test-owner");
         assert_eq!(result["repo"], "test-repo");
         assert_eq!(result["pending_prs"].as_array().unwrap().len(), 2);
@@ -856,15 +1020,22 @@ mod tests {
         let node = VesselNode::new(config);
 
         let result = node.prep(&store).await.unwrap();
-        
+
         assert_eq!(result["pending_prs"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
     async fn test_post_handles_merged_outcome() {
         let store = SharedStore::new_in_memory();
-        store.set("pending_prs", json!([{"number": 42, "ticket_id": "T-42"}])).await;
-        store.set("tickets", json!([{"id": "T-42", "status": {"type": "in_progress"}}])).await;
+        store
+            .set("pending_prs", json!([{"number": 42, "ticket_id": "T-42"}]))
+            .await;
+        store
+            .set(
+                "tickets",
+                json!([{"id": "T-42", "status": {"type": "in_progress"}}]),
+            )
+            .await;
 
         let config = VesselConfig::default();
         let node = VesselNode::new(config);
@@ -956,10 +1127,15 @@ mod tests {
     #[tokio::test]
     async fn test_update_ticket_status() {
         let store = SharedStore::new_in_memory();
-        store.set("tickets", json!([
-            {"id": "T-1", "status": {"type": "open"}},
-            {"id": "T-42", "status": {"type": "in_progress"}},
-        ])).await;
+        store
+            .set(
+                "tickets",
+                json!([
+                    {"id": "T-1", "status": {"type": "open"}},
+                    {"id": "T-42", "status": {"type": "in_progress"}},
+                ]),
+            )
+            .await;
 
         let config = VesselConfig::default();
         let node = VesselNode::new(config);
@@ -974,11 +1150,16 @@ mod tests {
     #[tokio::test]
     async fn test_remove_from_pending_prs() {
         let store = SharedStore::new_in_memory();
-        store.set("pending_prs", json!([
-            {"number": 1, "ticket_id": "T-1"},
-            {"number": 42, "ticket_id": "T-42"},
-            {"number": 100, "ticket_id": "T-100"},
-        ])).await;
+        store
+            .set(
+                "pending_prs",
+                json!([
+                    {"number": 1, "ticket_id": "T-1"},
+                    {"number": 42, "ticket_id": "T-42"},
+                    {"number": 100, "ticket_id": "T-100"},
+                ]),
+            )
+            .await;
 
         let config = VesselConfig::default();
         let node = VesselNode::new(config);
