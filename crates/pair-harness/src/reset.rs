@@ -76,7 +76,7 @@ impl ResetManager {
 
         // Write the synthesized handoff
         let handoff_path = self.shared.join("HANDOFF.md");
-        fs::write(&handoff_path, handoff.to_string())?;
+        fs::write(&handoff_path, handoff.to_markdown())?;
 
         info!("Synthesized handoff written");
         Ok(())
@@ -205,6 +205,56 @@ pub struct Handoff {
     pub timestamp: DateTime<Utc>,
 }
 
+impl std::fmt::Display for Handoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "# HANDOFF")?;
+        writeln!(f)?;
+        writeln!(f, "**Ticket:** {}", self.ticket_id)?;
+        writeln!(f)?;
+        writeln!(f, "**Pair:** {}", self.pair_id)?;
+        writeln!(f)?;
+        writeln!(f, "**Timestamp:** {}", self.timestamp.to_rfc3339())?;
+        writeln!(f)?;
+
+        writeln!(f, "## Completed Segments")?;
+        writeln!(f)?;
+        for seg in &self.completed_segments {
+            writeln!(f, "- Segment {}: {}", seg.number, seg.status)?;
+            for file in &seg.files {
+                writeln!(f, "  - {}", file)?;
+            }
+        }
+
+        if let Some(ref in_prog) = self.in_progress {
+            writeln!(f)?;
+            writeln!(f, "## In Progress")?;
+            writeln!(f)?;
+            writeln!(f, "- Segment {}: {}", in_prog.number, in_prog.status)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, "## Decisions")?;
+        writeln!(f)?;
+        for decision in &self.decisions {
+            writeln!(f, "- {}", decision)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, "## Files Changed")?;
+        writeln!(f)?;
+        for file in &self.files_changed {
+            writeln!(f, "- {}", file)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, "## Exact next step")?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.next_step)?;
+
+        Ok(())
+    }
+}
+
 impl Handoff {
     /// Parse a HANDOFF.md file.
     pub fn parse(content: &str) -> Self {
@@ -222,6 +272,23 @@ impl Handoff {
         let mut current_section = String::new();
 
         for line in content.lines() {
+            if line.starts_with("**Ticket:**") {
+                handoff.ticket_id = line.trim_start_matches("**Ticket:**").trim().to_string();
+                continue;
+            }
+            if line.starts_with("**Pair:**") {
+                handoff.pair_id = line.trim_start_matches("**Pair:**").trim().to_string();
+                continue;
+            }
+            if line.starts_with("TICKET ID:") {
+                handoff.ticket_id = line.trim_start_matches("TICKET ID:").trim().to_string();
+                continue;
+            }
+            if line.starts_with("PAIR ID:") {
+                handoff.pair_id = line.trim_start_matches("PAIR ID:").trim().to_string();
+                continue;
+            }
+
             // Section headers
             if line.starts_with("## ") {
                 current_section = line.trim_start_matches("## ").to_string();
@@ -230,46 +297,38 @@ impl Handoff {
 
             // Parse based on section
             match current_section.as_str() {
-                "Ticket" | "Ticket ID" => {
+                "Ticket" | "Ticket ID" if !line.trim().is_empty() => {
                     handoff.ticket_id = line.trim().to_string();
                 }
-                "Pair" | "Pair ID" => {
+                "Pair" | "Pair ID" if !line.trim().is_empty() => {
                     handoff.pair_id = line.trim().to_string();
                 }
-                "Completed Segments" => {
-                    if line.starts_with("- Segment") {
-                        // Parse segment summary
-                        let num = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .unwrap_or(0);
-                        handoff.completed_segments.push(SegmentSummary {
-                            number: num,
-                            status: "APPROVED".to_string(),
-                            files: Vec::new(),
-                        });
-                    }
+                "Completed Segments" if line.starts_with("- Segment") => {
+                    // Parse segment summary
+                    let num = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    handoff.completed_segments.push(SegmentSummary {
+                        number: num,
+                        status: "APPROVED".to_string(),
+                        files: Vec::new(),
+                    });
                 }
-                "Decisions" => {
-                    if line.starts_with("- ") {
-                        handoff
-                            .decisions
-                            .push(line.trim_start_matches("- ").to_string());
-                    }
+                "Decisions" if line.starts_with("- ") => {
+                    handoff
+                        .decisions
+                        .push(line.trim_start_matches("- ").to_string());
                 }
-                "Files Changed" => {
-                    if line.starts_with("- ") {
-                        handoff
-                            .files_changed
-                            .push(line.trim_start_matches("- ").to_string());
-                    }
+                "Files Changed" if line.starts_with("- ") => {
+                    handoff
+                        .files_changed
+                        .push(line.trim_start_matches("- ").to_string());
                 }
-                "Exact next step" => {
-                    if !line.is_empty() && !line.starts_with("#") {
-                        handoff.next_step.push_str(line);
-                        handoff.next_step.push('\n');
-                    }
+                "Exact next step" if !line.is_empty() && !line.starts_with('#') => {
+                    handoff.next_step.push_str(line);
+                    handoff.next_step.push('\n');
                 }
                 _ => {}
             }
@@ -280,48 +339,8 @@ impl Handoff {
     }
 
     /// Convert to markdown format.
-    pub fn to_string(&self) -> String {
-        let mut md = String::new();
-
-        md.push_str("# HANDOFF\n\n");
-        md.push_str(&format!("**Ticket:** {}\n\n", self.ticket_id));
-        md.push_str(&format!("**Pair:** {}\n\n", self.pair_id));
-        md.push_str(&format!(
-            "**Timestamp:** {}\n\n",
-            self.timestamp.to_rfc3339()
-        ));
-
-        md.push_str("## Completed Segments\n\n");
-        for seg in &self.completed_segments {
-            md.push_str(&format!("- Segment {}: {}\n", seg.number, seg.status));
-            for file in &seg.files {
-                md.push_str(&format!("  - {}\n", file));
-            }
-        }
-
-        if let Some(ref in_prog) = self.in_progress {
-            md.push_str("\n## In Progress\n\n");
-            md.push_str(&format!(
-                "- Segment {}: {}\n",
-                in_prog.number, in_prog.status
-            ));
-        }
-
-        md.push_str("\n## Decisions\n\n");
-        for decision in &self.decisions {
-            md.push_str(&format!("- {}\n", decision));
-        }
-
-        md.push_str("\n## Files Changed\n\n");
-        for file in &self.files_changed {
-            md.push_str(&format!("- {}\n", file));
-        }
-
-        md.push_str("\n## Exact next step\n\n");
-        md.push_str(&self.next_step);
-        md.push_str("\n");
-
-        md
+    pub fn to_markdown(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -382,7 +401,7 @@ Continue with segment 2: Implement JWT token generation.
             timestamp: Utc::now(),
         };
 
-        let md = handoff.to_string();
+        let md = handoff.to_markdown();
         let parsed = Handoff::parse(&md);
 
         assert_eq!(parsed.ticket_id, handoff.ticket_id);

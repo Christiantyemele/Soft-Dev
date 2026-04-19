@@ -4,22 +4,20 @@
 //! This test verifies the complete lifecycle from ticket assignment to PR merge,
 //! following the specification in docs/forge-sentinel-arch.md section 19.
 
+use pair_harness::{FileLockManager, ForgeSentinelPair, PairConfig, PairOutcome, Ticket};
 use std::path::PathBuf;
-use std::time::Duration;
 use tempfile::TempDir;
-
-use pair_harness::{FileLockManager, ForgeSentinelPair, FsEvent, PairConfig, PairOutcome, Ticket};
 
 /// Test configuration for e2e tests
 struct TestConfig {
     /// Temporary directory for test project
     temp_dir: TempDir,
     /// Path to main worktree
-    main_path: PathBuf,
+    _main_path: PathBuf,
     /// Path to worktrees directory
-    worktrees_path: PathBuf,
+    _worktrees_path: PathBuf,
     /// Path to orchestration directory
-    orchestration_path: PathBuf,
+    _orchestration_path: PathBuf,
 }
 
 impl TestConfig {
@@ -38,9 +36,9 @@ impl TestConfig {
 
         Ok(Self {
             temp_dir,
-            main_path,
-            worktrees_path,
-            orchestration_path,
+            _main_path: main_path,
+            _worktrees_path: worktrees_path,
+            _orchestration_path: orchestration_path,
         })
     }
 
@@ -168,27 +166,34 @@ async fn test_worktree_provisioning() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let main_path = temp_dir.path().join("main");
 
-    // Initialize a git repo in main
+    // Initialize a git repo in main and set up identity
     std::fs::create_dir_all(&main_path).expect("Failed to create main dir");
-    std::process::Command::new("git")
-        .args(&["init"])
-        .current_dir(&main_path)
-        .output()
-        .expect("Failed to init git repo");
+    setup_mock_git_repo(&main_path).expect("Failed to setup mock git repo");
 
     // Create initial commit
     std::fs::write(main_path.join("README.md"), "# Test Project\n")
         .expect("Failed to write README");
-    std::process::Command::new("git")
-        .args(&["add", "README.md"])
+    let output = std::process::Command::new("git")
+        .args(["add", "README.md"])
         .current_dir(&main_path)
         .output()
-        .expect("Failed to add README");
-    std::process::Command::new("git")
-        .args(&["commit", "-m", "Initial commit"])
+        .expect("Failed to run git add");
+    assert!(
+        output.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = std::process::Command::new("git")
+        .args(["commit", "-m", "Initial commit"])
         .current_dir(&main_path)
         .output()
-        .expect("Failed to commit");
+        .expect("Failed to run git commit");
+    assert!(
+        output.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let manager = WorktreeManager::new(main_path.clone());
 
@@ -199,14 +204,11 @@ async fn test_worktree_provisioning() {
             assert!(worktree_path.exists());
             println!("Worktree created at: {:?}", worktree_path);
 
-            // Verify branch was created
-            let output = std::process::Command::new("git")
-                .args(&["branch", "--list", "forge-pair-1/T-42"])
-                .current_dir(&main_path)
-                .output()
-                .expect("Failed to list branches");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(stdout.contains("forge-pair-1/T-42"));
+            // Verify branch was created and worktree is on it
+            let actual_branch = manager
+                .get_current_branch(&worktree_path)
+                .expect("Failed to get current branch");
+            assert_eq!(actual_branch, "forge-pair-1/T-42");
         }
         Err(e) => {
             // This test requires git to be installed
@@ -278,9 +280,9 @@ async fn test_context_reset_and_handoff() {
 
     // Verify handoff content
     let content = std::fs::read_to_string(&handoff_path).expect("Failed to read handoff");
-    assert!(content.contains("## Completed Work"));
+    assert!(content.contains("## Completed Segments"));
     assert!(content.contains("## Files Changed"));
-    assert!(content.contains("## Key Decisions"));
+    assert!(content.contains("## Decisions"));
 }
 
 #[tokio::test]
@@ -310,30 +312,30 @@ fn setup_mock_git_repo(path: &PathBuf) -> anyhow::Result<()> {
 
     // Initialize repo
     Command::new("git")
-        .args(&["init"])
+        .args(["init"])
         .current_dir(path)
         .output()?;
 
     // Set user config
     Command::new("git")
-        .args(&["config", "user.email", "test@example.com"])
+        .args(["config", "user.email", "test@example.com"])
         .current_dir(path)
         .output()?;
 
     Command::new("git")
-        .args(&["config", "user.name", "Test User"])
+        .args(["config", "user.name", "Test User"])
         .current_dir(path)
         .output()?;
 
     // Create initial commit
     std::fs::write(path.join(".gitkeep"), "")?;
     Command::new("git")
-        .args(&["add", ".gitkeep"])
+        .args(["add", ".gitkeep"])
         .current_dir(path)
         .output()?;
 
     Command::new("git")
-        .args(&["commit", "-m", "Initial commit"])
+        .args(["commit", "-m", "Initial commit"])
         .current_dir(path)
         .output()?;
 

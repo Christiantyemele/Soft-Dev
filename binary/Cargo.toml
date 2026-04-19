@@ -2,6 +2,7 @@
 name    = "agent-team"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [[bin]]
 name = "agent-team"
@@ -10,20 +11,17 @@ path = "src/main.rs"
 [dependencies]
 pocketflow-core = { path = "../crates/pocketflow-core" }
 config          = { path = "../crates/config" }
-github          = { path = "../crates/github" }
 agent-nexus     = { path = "../crates/agent-nexus" }
 agent-forge     = { path = "../crates/agent-forge" }
 agent-vessel    = { path = "../crates/agent-vessel" }
 pair-harness    = { path = "../crates/pair-harness" }
 
 anyhow      = { workspace = true }
-serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true }
 tracing     = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy     = { workspace = true }
-async-trait = "0.1"
 
 [dev-dependencies]
 mockito = "1"

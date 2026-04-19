@@ -79,8 +79,8 @@ impl AnthropicClient {
     /// ANTHROPIC_API_KEY if PROXY_API_KEY is not set).
     pub fn from_env() -> Result<Self> {
         let api_url = Self::resolve_api_url();
-        let proxy_active = std::env::var("PROXY_URL").is_ok()
-            || std::env::var("ANTHROPIC_BASE_URL").is_ok();
+        let proxy_active =
+            std::env::var("PROXY_URL").is_ok() || std::env::var("ANTHROPIC_BASE_URL").is_ok();
         let api_key = Self::resolve_api_key(proxy_active)?;
         let model = std::env::var("ANTHROPIC_MODEL")
             .unwrap_or_else(|_| "claude-3-5-haiku-20241022".to_string());

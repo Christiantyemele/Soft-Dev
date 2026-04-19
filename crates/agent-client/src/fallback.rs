@@ -82,20 +82,13 @@ impl FallbackClient {
             "Building fallback client chain"
         );
 
-        // When proxy is active, we only need PROXY_API_KEY (or no auth for self-hosted)
-        // Individual API keys are optional and only used as fallback
         if proxy_active {
             return Self::build_proxy_chain(model_override);
         }
 
-        // Direct mode: require individual API keys
         Self::build_direct_chain(model_override)
     }
 
-    /// Build client chain for proxy mode.
-    /// Proxy client is always first. Direct API key clients are appended as
-    /// fallbacks so a transient proxy failure (503, timeout) doesn't kill the
-    /// entire request.
     fn build_proxy_chain(model_override: Option<&str>) -> Result<Self> {
         let mut clients: Vec<Box<dyn LlmClient>> = Vec::new();
         let model = model_override.unwrap_or("claude-haiku-4-5-20251001");
@@ -108,7 +101,6 @@ impl FallbackClient {
             "Proxy mode: configuring client (with direct-key fallbacks)"
         );
 
-        // --- 1. Proxy client (primary) ---
         match mapped_provider.as_deref() {
             Some("openai") => {
                 match OpenAiClient::from_proxy(model) {
@@ -242,6 +234,25 @@ impl FallbackClient {
         }
 
         let result: Option<Box<dyn LlmClient>> = match name {
+            "proxy" => {
+                let client = match model_override {
+                    Some(m) => AnthropicClient::from_env_with_model(m),
+                    None => AnthropicClient::from_env(),
+                };
+                client.map(|c| {
+                    info!(provider = name, model = %c.model(), "Client initialized (proxy)");
+                    Box::new(c) as Box<dyn LlmClient>
+                }).ok()
+            }
+            "openai-proxy" => {
+                let default_model =
+                    std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                let model = model_override.unwrap_or(&default_model);
+                OpenAiClient::from_proxy(model).map(|c| {
+                    info!(provider = name, model = %c.model(), "Client initialized (openai-proxy)");
+                    Box::new(c) as Box<dyn LlmClient>
+                }).ok()
+            }
             "anthropic" => {
                 let client = match model_override {
                     Some(m) => AnthropicClient::from_env_with_model(m),

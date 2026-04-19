@@ -28,10 +28,11 @@ impl Ticket {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TicketStatus {
     #[serde(rename = "open")]
+    #[default]
     Open,
     #[serde(rename = "assigned")]
     Assigned { worker_id: String },
@@ -49,12 +50,6 @@ pub enum TicketStatus {
     Completed { worker_id: String, outcome: String },
     #[serde(rename = "exhausted")]
     Exhausted { worker_id: String, attempts: u32 },
-}
-
-impl Default for TicketStatus {
-    fn default() -> Self {
-        TicketStatus::Open
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
