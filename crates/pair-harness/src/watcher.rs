@@ -16,7 +16,7 @@ const DEBOUNCE_MS: u64 = 500;
 
 /// Watches the shared directory for file changes.
 pub struct SharedDirWatcher {
-    /// The underlying notify watcher
+    /// The underlying notify watcher (must be kept alive)
     _watcher: RecommendedWatcher,
     /// Receiver for filesystem events
     receiver: Receiver<FsEvent>,
@@ -196,7 +196,6 @@ impl AsyncWatcher {
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write;
     use tempfile::tempdir;
 
     #[test]
