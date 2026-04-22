@@ -77,24 +77,11 @@ fn normalize_status(raw: &str) -> String {
             "PR_OPENED".to_string()
         }
 
-        "FAILED"
-        | "FAILURE"
-        | "ERROR"
-        | "ERRORED"
-        | "STUCK"
-        | "CANNOT_PROCEED"
-        | "UNABLE_TO_COMPLETE"
-        | "ABORTED"
-        | "ABANDONED" => "BLOCKED".to_string(),
+        "FAILED" | "FAILURE" | "ERROR" | "ERRORED" | "STUCK" | "CANNOT_PROCEED"
+        | "UNABLE_TO_COMPLETE" | "ABORTED" | "ABANDONED" => "BLOCKED".to_string(),
 
-        "PAUSED"
-        | "WAITING"
-        | "NEEDS_REVIEW"
-        | "REVIEW_REQUESTED"
-        | "AWAITING_REVIEW"
-        | "IN_REVIEW"
-        | "PARTIAL"
-        | "PARTIALLY_DONE" => "PENDING_REVIEW".to_string(),
+        "PAUSED" | "WAITING" | "NEEDS_REVIEW" | "REVIEW_REQUESTED" | "AWAITING_REVIEW"
+        | "IN_REVIEW" | "PARTIAL" | "PARTIALLY_DONE" => "PENDING_REVIEW".to_string(),
 
         // Segment variants: SEGMENT_1_DONE, SEGMENT_2_COMPLETE, etc.
         _ if upper.starts_with("SEGMENT_")
@@ -108,7 +95,7 @@ fn normalize_status(raw: &str) -> String {
 
         // Keyword-based fuzzy matching: infer intent from keywords in the status string.
         // This is the fallback before treating the status as unrecognized.
-        // Rules are ordered from most-specific to least-specific to avoid mis-mapping.
+        // Rules are ordered from most-specific to least-specific to avoid incorrect mapping.
         _ => {
             // 1. PR-related keywords → PR_OPENED
             if (upper.contains("PR") || upper.contains("PULL_REQUEST"))
@@ -704,7 +691,9 @@ impl ForgeSentinelPair {
                         }
                         if awaiting_review && self.sentinel_tracker.is_none() {
                             if self.all_segments_approved().await? {
-                                info!("AWAITING_SENTINEL_REVIEW — spawning SENTINEL for final review");
+                                info!(
+                                    "AWAITING_SENTINEL_REVIEW — spawning SENTINEL for final review"
+                                );
                                 self.spawn_sentinel_for_final().await?;
                             } else if let Some(segment_n) = self.next_segment_to_eval().await? {
                                 info!(
@@ -713,7 +702,9 @@ impl ForgeSentinelPair {
                                 );
                                 self.spawn_sentinel_for_segment(segment_n).await?;
                             } else {
-                                info!("AWAITING_SENTINEL_REVIEW — spawning SENTINEL for final review");
+                                info!(
+                                    "AWAITING_SENTINEL_REVIEW — spawning SENTINEL for final review"
+                                );
                                 self.spawn_sentinel_for_final().await?;
                             }
                         }
@@ -745,8 +736,7 @@ impl ForgeSentinelPair {
                     return Ok(PairOutcome::Blocked {
                         reason: format!(
                             "Pair stalled — no progress for {}s (total elapsed: {}s)",
-                            worklog_elapsed,
-                            total_elapsed
+                            worklog_elapsed, total_elapsed
                         ),
                         blockers: vec![],
                     });
@@ -803,7 +793,8 @@ impl ForgeSentinelPair {
                             }
                         }
                         FsEvent::StatusJsonWritten => {
-                            let awaiting_review = self.check_status_awaiting_sentinel_review().await;
+                            let awaiting_review =
+                                self.check_status_awaiting_sentinel_review().await;
                             if let Some(status) = self.read_status().await? {
                                 return Ok(status);
                             }
@@ -993,7 +984,9 @@ impl ForgeSentinelPair {
                 WorktreeManager::branch_name(&self.config.pair_id, &ticket.id)
             )
         } else if ci_fix_path.exists() {
-            let ci_fix_content = tokio::fs::read_to_string(&ci_fix_path).await.unwrap_or_default();
+            let ci_fix_content = tokio::fs::read_to_string(&ci_fix_path)
+                .await
+                .unwrap_or_default();
             let failure_summary = ci_fix_content
                 .lines()
                 .find(|l| l.starts_with("## Failed Checks"))
@@ -1002,7 +995,12 @@ impl ForgeSentinelPair {
                         .split("## Failed Checks\n\n")
                         .nth(1)
                         .unwrap_or("");
-                    after.split("\n## ").next().unwrap_or(after).trim().to_string()
+                    after
+                        .split("\n## ")
+                        .next()
+                        .unwrap_or(after)
+                        .trim()
+                        .to_string()
                 })
                 .unwrap_or_else(|| "CI checks failed".to_string());
             let job_log_section = ci_fix_content
@@ -1615,8 +1613,7 @@ impl ForgeSentinelPair {
                 reset_count: status.context_resets,
             },
             "PENDING_REVIEW" | "APPROVED_READY" | "AWAITING_SENTINEL_REVIEW" => {
-                self.archive_non_terminal_status(&normalized)
-                    .await?;
+                self.archive_non_terminal_status(&normalized).await?;
                 debug!(
                     status = %normalized,
                     "FORGE requests additional review/work — treating as non-terminal, continuing event loop"
@@ -1625,7 +1622,11 @@ impl ForgeSentinelPair {
             }
             _ => {
                 let s = normalized.as_str();
-                if s.starts_with("SEGMENT_") && (s.ends_with("_DONE") || s.ends_with("_COMPLETE") || s.ends_with("_FINISHED")) {
+                if s.starts_with("SEGMENT_")
+                    && (s.ends_with("_DONE")
+                        || s.ends_with("_COMPLETE")
+                        || s.ends_with("_FINISHED"))
+                {
                     self.archive_non_terminal_status(s).await?;
                     debug!(status = s, "Intermediate segment status in STATUS.json — treating as non-terminal, continuing event loop");
                     return Ok(None);
@@ -1803,10 +1804,11 @@ impl ForgeSentinelPair {
             "\n\n## Last Sentinel Failure\n\n\
              Mode: {}\n\
              Reason: {}\n",
-            mode_str,
-            failure.reason,
+            mode_str, failure.reason,
         );
-        let existing = tokio::fs::read_to_string(&handoff_path).await.unwrap_or_default();
+        let existing = tokio::fs::read_to_string(&handoff_path)
+            .await
+            .unwrap_or_default();
         if existing.contains("## Last Sentinel Failure") {
             return Ok(());
         }
@@ -1896,7 +1898,10 @@ impl ForgeSentinelPair {
         if content.len() <= MAX_EXCERPT_LEN {
             Some(content.trim().to_string())
         } else {
-            Some(format!("...{}", &content[content.len() - MAX_EXCERPT_LEN..].trim()))
+            Some(format!(
+                "...{}",
+                &content[content.len() - MAX_EXCERPT_LEN..].trim()
+            ))
         }
     }
 
@@ -1965,7 +1970,7 @@ impl ForgeSentinelPair {
             |segment: Option<u32>, has_files: bool, has_commands: bool, out: &mut Vec<u32>| {
                 if let Some(n) = segment {
                     // Command-only verification steps should not block final review.
-                    if !(has_commands && !has_files) {
+                    if !has_commands || has_files {
                         out.push(n);
                     }
                 }
@@ -2268,13 +2273,22 @@ mod tests {
         assert_eq!(normalize_status("REVIEW_PENDING"), "PENDING_REVIEW");
         assert_eq!(normalize_status("WAITING_FOR_APPROVAL"), "PENDING_REVIEW");
         assert_eq!(normalize_status("ON_HOLD"), "PENDING_REVIEW");
-        assert_eq!(normalize_status("IMPLEMENTATION_COMPLETE"), "IMPLEMENTATION_COMPLETE"); // canonical passthrough
+        assert_eq!(
+            normalize_status("IMPLEMENTATION_COMPLETE"),
+            "IMPLEMENTATION_COMPLETE"
+        ); // canonical passthrough
         assert_eq!(normalize_status("WORK_FINISHED"), "COMPLETE");
         assert_eq!(normalize_status("BUILD_FAILED"), "BLOCKED");
         assert_eq!(normalize_status("PR_OPEN_PENDING"), "PR_OPENED");
         assert_eq!(normalize_status("BUDGET_EXCEEDED"), "FUEL_EXHAUSTED");
-        assert_eq!(normalize_status("SENTINEL_REVIEW_NEEDED"), "AWAITING_SENTINEL_REVIEW");
-        assert_eq!(normalize_status("SEGMENT_IN_PROGRESS"), "SEGMENT_IN_PROGRESS");
+        assert_eq!(
+            normalize_status("SENTINEL_REVIEW_NEEDED"),
+            "AWAITING_SENTINEL_REVIEW"
+        );
+        assert_eq!(
+            normalize_status("SEGMENT_IN_PROGRESS"),
+            "SEGMENT_IN_PROGRESS"
+        );
         assert_eq!(normalize_status("CODE_REVIEW_COMPLETE"), "COMPLETE"); // "COMPLETE" overrides "REVIEW"
         assert_eq!(normalize_status("TASK_SUCCESSFUL"), "COMPLETE");
     }

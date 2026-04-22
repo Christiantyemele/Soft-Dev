@@ -111,7 +111,12 @@ fn remap_unrecognized_status(raw: &str) -> Option<&'static str> {
 fn auto_resolve_unrecognized_statuses(tickets: &mut [Ticket]) -> usize {
     let mut resolved = 0;
     for ticket in tickets.iter_mut() {
-        if let TicketStatus::Failed { reason, worker_id: _, attempts: _ } = &ticket.status {
+        if let TicketStatus::Failed {
+            reason,
+            worker_id: _,
+            attempts: _,
+        } = &ticket.status
+        {
             if reason.starts_with("Unrecognized STATUS.json status:") {
                 // Parse the raw status from the reason string:
                 // "Unrecognized STATUS.json status: AWAITING_REVIEW (normalized: AWAITING_REVIEW)"
@@ -774,7 +779,10 @@ impl Node for NexusNode {
 
         let resolved = auto_resolve_unrecognized_statuses(&mut tickets);
         if resolved > 0 {
-            info!(resolved, "Auto-resolved tickets with unrecognized STATUS.json statuses");
+            info!(
+                resolved,
+                "Auto-resolved tickets with unrecognized STATUS.json statuses"
+            );
             store.set(KEY_TICKETS, json!(tickets)).await;
         }
 
@@ -1021,17 +1029,32 @@ mod tests {
 
     #[test]
     fn test_remap_unrecognized_status_review_keywords() {
-        assert_eq!(remap_unrecognized_status("AWAITING_REVIEW"), Some("PENDING_REVIEW"));
-        assert_eq!(remap_unrecognized_status("REVIEW_PENDING"), Some("PENDING_REVIEW"));
-        assert_eq!(remap_unrecognized_status("WAITING_FOR_APPROVAL"), Some("PENDING_REVIEW"));
+        assert_eq!(
+            remap_unrecognized_status("AWAITING_REVIEW"),
+            Some("PENDING_REVIEW")
+        );
+        assert_eq!(
+            remap_unrecognized_status("REVIEW_PENDING"),
+            Some("PENDING_REVIEW")
+        );
+        assert_eq!(
+            remap_unrecognized_status("WAITING_FOR_APPROVAL"),
+            Some("PENDING_REVIEW")
+        );
         assert_eq!(remap_unrecognized_status("ON_HOLD"), Some("PENDING_REVIEW"));
-        assert_eq!(remap_unrecognized_status("SENTINEL_REVIEW_NEEDED"), Some("AWAITING_SENTINEL_REVIEW"));
+        assert_eq!(
+            remap_unrecognized_status("SENTINEL_REVIEW_NEEDED"),
+            Some("AWAITING_SENTINEL_REVIEW")
+        );
     }
 
     #[test]
     fn test_remap_unrecognized_status_done_keywords() {
         assert_eq!(remap_unrecognized_status("ALL_DONE"), Some("COMPLETE"));
-        assert_eq!(remap_unrecognized_status("IMPLEMENTATION_COMPLETE"), Some("COMPLETE"));
+        assert_eq!(
+            remap_unrecognized_status("IMPLEMENTATION_COMPLETE"),
+            Some("COMPLETE")
+        );
         assert_eq!(remap_unrecognized_status("FINISHED_WORK"), Some("COMPLETE"));
     }
 
@@ -1039,19 +1062,34 @@ mod tests {
     fn test_remap_unrecognized_status_blocked_keywords() {
         assert_eq!(remap_unrecognized_status("BUILD_FAILED"), Some("BLOCKED"));
         assert_eq!(remap_unrecognized_status("ERROR_OCCURRED"), Some("BLOCKED"));
-        assert_eq!(remap_unrecognized_status("CANNOT_PROCEED_FURTHER"), Some("BLOCKED"));
+        assert_eq!(
+            remap_unrecognized_status("CANNOT_PROCEED_FURTHER"),
+            Some("BLOCKED")
+        );
     }
 
     #[test]
     fn test_remap_unrecognized_status_pr_keywords() {
-        assert_eq!(remap_unrecognized_status("PR_OPEN_PENDING"), Some("PR_OPENED"));
-        assert_eq!(remap_unrecognized_status("PULL_REQUEST_CREATED"), Some("PR_OPENED"));
+        assert_eq!(
+            remap_unrecognized_status("PR_OPEN_PENDING"),
+            Some("PR_OPENED")
+        );
+        assert_eq!(
+            remap_unrecognized_status("PULL_REQUEST_CREATED"),
+            Some("PR_OPENED")
+        );
     }
 
     #[test]
     fn test_remap_unrecognized_status_fuel_keywords() {
-        assert_eq!(remap_unrecognized_status("BUDGET_EXCEEDED"), Some("FUEL_EXHAUSTED"));
-        assert_eq!(remap_unrecognized_status("FUEL_DEPLETED"), Some("FUEL_EXHAUSTED"));
+        assert_eq!(
+            remap_unrecognized_status("BUDGET_EXCEEDED"),
+            Some("FUEL_EXHAUSTED")
+        );
+        assert_eq!(
+            remap_unrecognized_status("FUEL_DEPLETED"),
+            Some("FUEL_EXHAUSTED")
+        );
     }
 
     #[test]

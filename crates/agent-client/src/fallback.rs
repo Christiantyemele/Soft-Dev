@@ -75,80 +75,79 @@ impl FallbackClient {
         Self::build(Some(model_override))
     }
 
-fn build(model_override: Option<&str>) -> Result<Self> {
-    let proxy_active = proxy_is_configured();
-    let fireworks_active = FireworksClient::is_configured();
+    fn build(model_override: Option<&str>) -> Result<Self> {
+        let proxy_active = proxy_is_configured();
+        let fireworks_active = FireworksClient::is_configured();
 
-    info!(
-        proxy_active,
-        fireworks_active,
-        model_override, "Building fallback client chain"
-    );
+        info!(
+            proxy_active,
+            fireworks_active, model_override, "Building fallback client chain"
+        );
 
-    if proxy_active {
-        return Self::build_proxy_chain(model_override);
+        if proxy_active {
+            return Self::build_proxy_chain(model_override);
+        }
+
+        if fireworks_active {
+            return Self::build_fireworks_chain(model_override);
+        }
+
+        Self::build_direct_chain(model_override)
     }
 
-    if fireworks_active {
-        return Self::build_fireworks_chain(model_override);
-    }
+    fn build_fireworks_chain(model_override: Option<&str>) -> Result<Self> {
+        let mut clients: Vec<Box<dyn LlmClient>> = Vec::new();
+        let model = model_override.unwrap_or("accounts/fireworks/models/llama-v3p1-8b-instruct");
 
-    Self::build_direct_chain(model_override)
-}
+        info!(
+            model = model,
+            "Fireworks mode: configuring client (with direct-key fallbacks)"
+        );
 
-fn build_fireworks_chain(model_override: Option<&str>) -> Result<Self> {
-    let mut clients: Vec<Box<dyn LlmClient>> = Vec::new();
-    let model = model_override.unwrap_or("accounts/fireworks/models/llama-v3p1-8b-instruct");
-
-    info!(
-        model = model,
-        "Fireworks mode: configuring client (with direct-key fallbacks)"
-    );
-
-    if let Ok(c) = FireworksClient::from_env_with_model(model) {
-        info!(provider = "fireworks", model = %c.model(), "Fireworks client initialized");
-        clients.push(Box::new(c));
-    }
-
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        if let Ok(c) = AnthropicClient::from_env_with_model(model) {
-            info!(provider = "anthropic-direct", model = %c.model(), "Direct fallback initialized");
+        if let Ok(c) = FireworksClient::from_env_with_model(model) {
+            info!(provider = "fireworks", model = %c.model(), "Fireworks client initialized");
             clients.push(Box::new(c));
         }
-    }
 
-    if std::env::var("GEMINI_API_KEY").is_ok() {
-        if let Ok(c) = GeminiClient::from_env() {
-            info!(provider = "gemini-direct", model = %c.model(), "Direct fallback initialized");
-            clients.push(Box::new(c));
+        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            if let Ok(c) = AnthropicClient::from_env_with_model(model) {
+                info!(provider = "anthropic-direct", model = %c.model(), "Direct fallback initialized");
+                clients.push(Box::new(c));
+            }
         }
-    }
 
-    if std::env::var("OPENAI_API_KEY").is_ok() {
-        if let Ok(c) = OpenAiClient::from_env() {
-            info!(provider = "openai-direct", model = %c.model(), "Direct fallback initialized");
-            clients.push(Box::new(c));
+        if std::env::var("GEMINI_API_KEY").is_ok() {
+            if let Ok(c) = GeminiClient::from_env() {
+                info!(provider = "gemini-direct", model = %c.model(), "Direct fallback initialized");
+                clients.push(Box::new(c));
+            }
         }
-    }
 
-    if clients.is_empty() {
-        bail!(
-            "Fireworks mode: Failed to initialize any client. \
+        if std::env::var("OPENAI_API_KEY").is_ok() {
+            if let Ok(c) = OpenAiClient::from_env() {
+                info!(provider = "openai-direct", model = %c.model(), "Direct fallback initialized");
+                clients.push(Box::new(c));
+            }
+        }
+
+        if clients.is_empty() {
+            bail!(
+                "Fireworks mode: Failed to initialize any client. \
              Ensure FIREWORKS_API_KEY is set, \
              or set at least one direct API key (ANTHROPIC_API_KEY, \
              GEMINI_API_KEY, OPENAI_API_KEY) as fallback."
-        );
+            );
+        }
+
+        let timeout_secs = std::env::var("LLM_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120);
+
+        Ok(Self::new(clients, Duration::from_secs(timeout_secs)))
     }
 
-    let timeout_secs = std::env::var("LLM_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(120);
-
-    Ok(Self::new(clients, Duration::from_secs(timeout_secs)))
-}
-
-fn build_proxy_chain(model_override: Option<&str>) -> Result<Self> {
+    fn build_proxy_chain(model_override: Option<&str>) -> Result<Self> {
         let mut clients: Vec<Box<dyn LlmClient>> = Vec::new();
         let model = model_override.unwrap_or("claude-haiku-4-5-20251001");
 

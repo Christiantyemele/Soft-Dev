@@ -720,7 +720,10 @@ impl ForgePairNode {
         if !push_output.status.success() {
             let stderr = String::from_utf8_lossy(&push_output.stderr);
 
-            if stderr.contains("GH013") || stderr.contains("Push cannot contain secrets") || stderr.contains("secret-scanning") {
+            if stderr.contains("GH013")
+                || stderr.contains("Push cannot contain secrets")
+                || stderr.contains("secret-scanning")
+            {
                 info!(
                     worker = worker_id,
                     branch = %branch_name,
@@ -739,7 +742,11 @@ impl ForgePairNode {
 
                 if has_fixup {
                     StdCommand::new("git")
-                        .args(["commit", "-m", &format!("{}: scrub secrets from tracked files", ticket_id)])
+                        .args([
+                            "commit",
+                            "-m",
+                            &format!("{}: scrub secrets from tracked files", ticket_id),
+                        ])
                         .current_dir(&worktree_path)
                         .output()
                         .context("Failed to commit secret scrub")?;
@@ -755,7 +762,10 @@ impl ForgePairNode {
 
                 if !retry_push.status.success() {
                     let retry_stderr = String::from_utf8_lossy(&retry_push.stderr);
-                    return Err(anyhow!("Push still rejected after secret scrub: {}", retry_stderr));
+                    return Err(anyhow!(
+                        "Push still rejected after secret scrub: {}",
+                        retry_stderr
+                    ));
                 }
             } else if stderr.contains("non-fast-forward") || stderr.contains("fetch first") {
                 info!(worker = worker_id, branch = %branch_name, "Normal push rejected — force-pushing with --force-with-lease");
@@ -767,14 +777,22 @@ impl ForgePairNode {
 
                 if !force_push.status.success() {
                     let force_stderr = String::from_utf8_lossy(&force_push.stderr);
-                    if force_stderr.contains("GH013") || force_stderr.contains("Push cannot contain secrets") {
+                    if force_stderr.contains("GH013")
+                        || force_stderr.contains("Push cannot contain secrets")
+                    {
                         return Err(anyhow!("Force-push rejected by secret scanning — secrets remain in git history. Error: {}", force_stderr));
                     }
                     return Err(anyhow!("Failed to force-push branch: {}", force_stderr));
                 }
-            } else if !stderr.contains("already exists") && !stderr.contains("up-to-date") && !stderr.contains("rejected") {
+            } else if !stderr.contains("already exists")
+                && !stderr.contains("up-to-date")
+                && !stderr.contains("rejected")
+            {
                 return Err(anyhow!("Failed to push branch: {}", stderr));
-            } else if stderr.contains("rejected") && !stderr.contains("non-fast-forward") && !stderr.contains("GH013") {
+            } else if stderr.contains("rejected")
+                && !stderr.contains("non-fast-forward")
+                && !stderr.contains("GH013")
+            {
                 return Err(anyhow!("Push rejected: {}", stderr));
             }
         }
@@ -917,7 +935,15 @@ impl ForgePairNode {
         token_env: &str,
         dirty_files: &mut Vec<std::path::PathBuf>,
     ) -> Result<()> {
-        let skip_dirs = [".git", "node_modules", "target", "__pycache__", ".next", "dist", "build"];
+        let skip_dirs = [
+            ".git",
+            "node_modules",
+            "target",
+            "__pycache__",
+            ".next",
+            "dist",
+            "build",
+        ];
 
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
@@ -931,15 +957,46 @@ impl ForgePairNode {
                     Self::scan_dir_for_secrets(base, &path, token_env, dirty_files)?;
                 } else if path.is_file() {
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    let is_text = matches!(ext,
-                        "json" | "yaml" | "yml" | "toml" | "env" | "ini" | "cfg" |
-                        "md" | "txt" | "rs" | "ts" | "js" | "py" | "go" | "rb" |
-                        "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" |
-                        "xml" | "html" | "css" | "scss" | "less" |
-                        "tf" | "tfvars" | "hcl" | "properties" | "conf"
+                    let is_text = matches!(
+                        ext,
+                        "json"
+                            | "yaml"
+                            | "yml"
+                            | "toml"
+                            | "env"
+                            | "ini"
+                            | "cfg"
+                            | "md"
+                            | "txt"
+                            | "rs"
+                            | "ts"
+                            | "js"
+                            | "py"
+                            | "go"
+                            | "rb"
+                            | "sh"
+                            | "bash"
+                            | "zsh"
+                            | "fish"
+                            | "ps1"
+                            | "bat"
+                            | "xml"
+                            | "html"
+                            | "css"
+                            | "scss"
+                            | "less"
+                            | "tf"
+                            | "tfvars"
+                            | "hcl"
+                            | "properties"
+                            | "conf"
                     ) || path.file_name().is_some_and(|n| {
                         let n = n.to_str().unwrap_or("");
-                        n == ".env" || n == ".env.local" || n.starts_with(".env.") || n == "credentials" || n == "secrets"
+                        n == ".env"
+                            || n == ".env.local"
+                            || n.starts_with(".env.")
+                            || n == "credentials"
+                            || n == "secrets"
                     });
 
                     if !is_text {
@@ -956,7 +1013,8 @@ impl ForgePairNode {
                             std::fs::write(&path, &modified)?;
                             let rel = path.strip_prefix(base).unwrap_or(&path);
                             info!(path = %rel.display(), "Redacted secrets from file");
-                            dirty_files.push(path.strip_prefix(base).unwrap_or(&path).to_path_buf());
+                            dirty_files
+                                .push(path.strip_prefix(base).unwrap_or(&path).to_path_buf());
                         }
                     }
                 }
@@ -1023,22 +1081,23 @@ impl ForgePairNode {
 
     fn redact_patterns(content: &str) -> String {
         let patterns = [
-            (r#"GITHUB_PERSONAL_ACCESS_TOKEN":\s*"[^"]*""#, 
-             r#"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}""#),
-            (r#"ghp_[A-Za-z0-9]{36}"#, 
-             r#"REDACTED_GITHUB_TOKEN"#),
-            (r#"gho_[A-Za-z0-9]{36}"#, 
-             r#"REDACTED_GITHUB_OAUTH"#),
-            (r#"ghu_[A-Za-z0-9]{36}"#, 
-             r#"REDACTED_GITHUB_USER"#),
-            (r#"ghs_[A-Za-z0-9]{36}"#, 
-             r#"REDACTED_GITHUB_SRE"#),
-            (r#"github_pat_[A-Za-z0-9_]{82}"#, 
-             r#"REDACTED_GITHUB_FINE_GRAINED_PAT"#),
-            (r#"sk-[A-Za-z0-9]{20}T3[A-Za-z0-9]{3}"#, 
-             r#"REDACTED_OPENAI_KEY"#),
-            (r#"AKIA[0-9A-Z]{16}"#, 
-             r#"REDACTED_AWS_ACCESS_KEY"#),
+            (
+                r#"GITHUB_PERSONAL_ACCESS_TOKEN":\s*"[^"]*""#,
+                r#"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}""#,
+            ),
+            (r#"ghp_[A-Za-z0-9]{36}"#, r#"REDACTED_GITHUB_TOKEN"#),
+            (r#"gho_[A-Za-z0-9]{36}"#, r#"REDACTED_GITHUB_OAUTH"#),
+            (r#"ghu_[A-Za-z0-9]{36}"#, r#"REDACTED_GITHUB_USER"#),
+            (r#"ghs_[A-Za-z0-9]{36}"#, r#"REDACTED_GITHUB_SRE"#),
+            (
+                r#"github_pat_[A-Za-z0-9_]{82}"#,
+                r#"REDACTED_GITHUB_FINE_GRAINED_PAT"#,
+            ),
+            (
+                r#"sk-[A-Za-z0-9]{20}T3[A-Za-z0-9]{3}"#,
+                r#"REDACTED_OPENAI_KEY"#,
+            ),
+            (r#"AKIA[0-9A-Z]{16}"#, r#"REDACTED_AWS_ACCESS_KEY"#),
         ];
 
         let mut result = content.to_string();
@@ -1051,8 +1110,8 @@ impl ForgePairNode {
     }
 
     fn git_add_safe(worktree_path: &std::path::Path) -> Result<()> {
-        use std::process::Command as StdCommand;
         use anyhow::Context as _;
+        use std::process::Command as StdCommand;
 
         Self::untrack_secret_containing_files(worktree_path)?;
 
@@ -1080,10 +1139,7 @@ impl ForgePairNode {
                     let file_path = worktree_path.join(file);
                     if let Ok(content) = std::fs::read_to_string(&file_path) {
                         if Self::contains_secrets(&content) {
-                            warn!(
-                                path = file,
-                                "Untracking file that contains secrets"
-                            );
+                            warn!(path = file, "Untracking file that contains secrets");
                             let _ = StdCommand::new("git")
                                 .args(["rm", "--cached", file])
                                 .current_dir(worktree_path)
@@ -1149,7 +1205,15 @@ impl ForgePairNode {
         );
 
         let output = StdCommand::new("git")
-            .args(["filter-branch", "--force", "--index-filter", &filter, "--prune-empty", "--", "HEAD"])
+            .args([
+                "filter-branch",
+                "--force",
+                "--index-filter",
+                &filter,
+                "--prune-empty",
+                "--",
+                "HEAD",
+            ])
             .current_dir(worktree_path)
             .output();
 
@@ -1321,8 +1385,13 @@ impl BatchNode for ForgePairNode {
                         }
                         Err(e) => {
                             let error_detail = format!("{:#}", e);
-                            let enriched_reason = if error_detail.contains("GH013") || error_detail.contains("secret") {
-                                format!("Push rejected: secrets detected in git history — {}", error_detail)
+                            let enriched_reason = if error_detail.contains("GH013")
+                                || error_detail.contains("secret")
+                            {
+                                format!(
+                                    "Push rejected: secrets detected in git history — {}",
+                                    error_detail
+                                )
                             } else {
                                 format!("Push failed: {}", error_detail)
                             };

@@ -231,9 +231,7 @@ impl Node for VesselNode {
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
 
-                    let current_ci_attempts = self
-                        .get_ci_fix_attempts(store, *pr_number)
-                        .await;
+                    let current_ci_attempts = self.get_ci_fix_attempts(store, *pr_number).await;
 
                     if current_ci_attempts >= MAX_CI_FIX_ATTEMPTS {
                         warn!(
@@ -285,10 +283,14 @@ impl Node for VesselNode {
                         });
 
                     let ci_fix_md_written = self
-                        .write_ci_fix_md(&CiFixPrInfo {
-                            pr_number: *pr_number,
-                            head_branch: head_branch.clone(),
-                        }, reason, failure_detail.as_ref())
+                        .write_ci_fix_md(
+                            &CiFixPrInfo {
+                                pr_number: *pr_number,
+                                head_branch: head_branch.clone(),
+                            },
+                            reason,
+                            failure_detail.as_ref(),
+                        )
                         .await;
 
                     if ci_fix_md_written {
@@ -374,9 +376,7 @@ impl Node for VesselNode {
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
 
-                    let current_ci_attempts = self
-                        .get_ci_fix_attempts(store, *pr_number)
-                        .await;
+                    let current_ci_attempts = self.get_ci_fix_attempts(store, *pr_number).await;
 
                     if current_ci_attempts >= MAX_CI_FIX_ATTEMPTS {
                         warn!(
@@ -405,16 +405,13 @@ impl Node for VesselNode {
                     let pr_entry = pending_prs
                         .iter()
                         .find(|p| p["number"].as_u64() == Some(*pr_number));
-                    let worker_id = pr_entry
-                        .and_then(|p| {
-                            let wid = p["worker_id"].as_str().unwrap_or("");
-                            if !wid.is_empty() {
-                                return Some(wid.to_string());
-                            }
-                            Self::derive_worker_id_from_branch(
-                                p["head_branch"].as_str().unwrap_or(""),
-                            )
-                        });
+                    let worker_id = pr_entry.and_then(|p| {
+                        let wid = p["worker_id"].as_str().unwrap_or("");
+                        if !wid.is_empty() {
+                            return Some(wid.to_string());
+                        }
+                        Self::derive_worker_id_from_branch(p["head_branch"].as_str().unwrap_or(""))
+                    });
                     let head_branch = pr_entry
                         .and_then(|p| p["head_branch"].as_str().map(|s| s.to_string()))
                         .unwrap_or_else(|| {
@@ -425,10 +422,14 @@ impl Node for VesselNode {
                         });
 
                     let ci_fix_md_written = self
-                        .write_ci_fix_md(&CiFixPrInfo {
-                            pr_number: *pr_number,
-                            head_branch: head_branch.clone(),
-                        }, "CI timed out — possible stuck or flaky CI run", None)
+                        .write_ci_fix_md(
+                            &CiFixPrInfo {
+                                pr_number: *pr_number,
+                                head_branch: head_branch.clone(),
+                            },
+                            "CI timed out — possible stuck or flaky CI run",
+                            None,
+                        )
                         .await;
 
                     if ci_fix_md_written {
@@ -656,8 +657,16 @@ impl VesselNode {
                         let reason = if detail.failed_checks.is_empty() {
                             format!("CI status: {:?}", status)
                         } else {
-                            let check_names: Vec<&str> = detail.failed_checks.iter().map(|c| c.name.as_str()).collect();
-                            format!("CI status: {:?} — failed checks: {}", status, check_names.join(", "))
+                            let check_names: Vec<&str> = detail
+                                .failed_checks
+                                .iter()
+                                .map(|c| c.name.as_str())
+                                .collect();
+                            format!(
+                                "CI status: {:?} — failed checks: {}",
+                                status,
+                                check_names.join(", ")
+                            )
                         };
                         (reason, Some(detail))
                     }
