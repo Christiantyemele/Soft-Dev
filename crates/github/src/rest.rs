@@ -8,12 +8,12 @@
 
 use anyhow::{Context, Result};
 use pocketflow_core::{CiStatus, MergeMethod, MergeResult, PrInfo, PrState};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
-use rand::Rng;
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
@@ -72,7 +72,8 @@ impl GithubRestClient {
                     if status.is_server_error() && attempt < MAX_RETRIES {
                         warn!(status = %status, attempt, "GitHub API server error, retrying");
                         let jitter = rand::thread_rng().gen_range(0..500);
-                        let delay = RETRY_BASE_DELAY * 2u32.pow(attempt) + Duration::from_millis(jitter);
+                        let delay =
+                            RETRY_BASE_DELAY * 2u32.pow(attempt) + Duration::from_millis(jitter);
                         sleep(delay).await;
                         continue;
                     }
@@ -83,7 +84,8 @@ impl GithubRestClient {
                     if is_connect && attempt < MAX_RETRIES {
                         warn!(error = %e, attempt, "GitHub API network error, retrying");
                         let jitter = rand::thread_rng().gen_range(0..500);
-                        let delay = RETRY_BASE_DELAY * 2u32.pow(attempt) + Duration::from_millis(jitter);
+                        let delay =
+                            RETRY_BASE_DELAY * 2u32.pow(attempt) + Duration::from_millis(jitter);
                         sleep(delay).await;
                         last_err = Some(e);
                         continue;
@@ -93,8 +95,16 @@ impl GithubRestClient {
             }
         }
         Err(last_err
-            .map(|e| anyhow::anyhow!("GitHub API request failed after {} retries: {}", MAX_RETRIES, e))
-            .unwrap_or_else(|| anyhow::anyhow!("GitHub API request failed after {} retries", MAX_RETRIES)))
+            .map(|e| {
+                anyhow::anyhow!(
+                    "GitHub API request failed after {} retries: {}",
+                    MAX_RETRIES,
+                    e
+                )
+            })
+            .unwrap_or_else(|| {
+                anyhow::anyhow!("GitHub API request failed after {} retries", MAX_RETRIES)
+            }))
     }
 
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T> {
@@ -130,14 +140,15 @@ impl GithubRestClient {
 
     async fn get_text(&self, url: &str) -> Result<String> {
         debug!(url, "GitHub API GET (text)");
-        let resp = self.send_with_retry(|| {
-            self.client
-                .get(url)
-                .header("Authorization", self.auth_header())
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-        })
-        .await?;
+        let resp = self
+            .send_with_retry(|| {
+                self.client
+                    .get(url)
+                    .header("Authorization", self.auth_header())
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2022-11-28")
+            })
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -157,7 +168,9 @@ impl GithubRestClient {
     ) -> Result<T> {
         debug!(url, "GitHub API PUT");
         let payload = serde_json::to_vec(body)?;
-        let resp = self.send_with_retry(|| self.build_put(url, &payload)).await?;
+        let resp = self
+            .send_with_retry(|| self.build_put(url, &payload))
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -256,7 +269,9 @@ impl GithubRestClient {
         repo: &str,
         ref_sha: &str,
     ) -> Result<String> {
-        let detail = self.get_failed_checks_detail_structured(owner, repo, ref_sha).await?;
+        let detail = self
+            .get_failed_checks_detail_structured(owner, repo, ref_sha)
+            .await?;
         Ok(detail.to_string())
     }
 
@@ -278,7 +293,10 @@ impl GithubRestClient {
                 warn!(error = %e, "check-runs API failed — falling back to check-suites for failure detail");
                 let fallback = self.get_failed_suites_detail(owner, repo, ref_sha).await?;
                 return Ok(CiFailureDetail {
-                    failed_checks: vec![FailedCheck { name: fallback.clone(), conclusion: "failure".to_string() }],
+                    failed_checks: vec![FailedCheck {
+                        name: fallback.clone(),
+                        conclusion: "failure".to_string(),
+                    }],
                     still_running: vec![],
                     job_logs: vec![],
                 });
@@ -691,7 +709,11 @@ fn tail_log(log: &str, max_lines: usize) -> String {
         log.to_string()
     } else {
         let skip = lines.len() - max_lines;
-        format!("... (truncated {} lines)\n{}", skip, lines[skip..].join("\n"))
+        format!(
+            "... (truncated {} lines)\n{}",
+            skip,
+            lines[skip..].join("\n")
+        )
     }
 }
 
@@ -763,7 +785,10 @@ impl fmt::Display for CiFailureDetail {
                 write!(f, "{}", log)?;
             }
         }
-        if self.failed_checks.is_empty() && self.still_running.is_empty() && self.job_logs.is_empty() {
+        if self.failed_checks.is_empty()
+            && self.still_running.is_empty()
+            && self.job_logs.is_empty()
+        {
             write!(f, "No check runs found for this commit")?;
         }
         Ok(())

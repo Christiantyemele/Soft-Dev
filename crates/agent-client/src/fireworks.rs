@@ -30,11 +30,10 @@ impl FireworksClient {
 
     pub fn from_env() -> Result<Self> {
         let key = std::env::var("FIREWORKS_API_KEY").context("FIREWORKS_API_KEY not set")?;
-        let model = std::env::var("FIREWORKS_MODEL").unwrap_or_else(|_| {
-            "accounts/fireworks/models/llama-v3p1-8b-instruct".to_string()
-        });
-        let api_url = std::env::var("FIREWORKS_API_URL")
-            .unwrap_or_else(|_| FIREWORKS_API_URL.to_string());
+        let model = std::env::var("FIREWORKS_MODEL")
+            .unwrap_or_else(|_| "accounts/fireworks/models/llama-v3p1-8b-instruct".to_string());
+        let api_url =
+            std::env::var("FIREWORKS_API_URL").unwrap_or_else(|_| FIREWORKS_API_URL.to_string());
         Ok(Self {
             http: Client::new(),
             api_url,

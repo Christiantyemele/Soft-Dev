@@ -814,8 +814,8 @@ impl ProcessManager {
                 .unwrap_or_else(|_| "Could not read CONFLICT_RESOLUTION.md".to_string())
         };
 
-        let task = std::fs::read_to_string(&task_path)
-            .unwrap_or_else(|_| "No TASK.md found".to_string());
+        let task =
+            std::fs::read_to_string(&task_path).unwrap_or_else(|_| "No TASK.md found".to_string());
         let worklog = if worklog_path.exists() {
             std::fs::read_to_string(&worklog_path)
                 .unwrap_or_else(|_| "No WORKLOG.md found".to_string())
