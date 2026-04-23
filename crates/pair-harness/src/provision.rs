@@ -85,7 +85,34 @@ impl Provisioner {
             }
         });
 
-        self.write_json(&settings_path, &settings)
+        self.write_json(&settings_path, &settings)?;
+
+        self.ensure_worktree_gitignore(worktree)
+    }
+
+    fn ensure_worktree_gitignore(&self, worktree: &Path) -> Result<()> {
+        let gitignore_path = worktree.join(".gitignore");
+        let claude_entry = ".claude/";
+
+        let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
+
+        if !existing.lines().any(|l| l.trim() == claude_entry) {
+            let updated = if existing.is_empty() {
+                format!("{}\n", claude_entry)
+            } else if existing.ends_with('\n') {
+                format!("{}{}\n", existing, claude_entry)
+            } else {
+                format!("{}\n{}\n", existing, claude_entry)
+            };
+            fs::write(&gitignore_path, updated)
+                .context("Failed to update .gitignore with .claude/ exclusion")?;
+            info!(
+                path = %gitignore_path.display(),
+                "Added .claude/ to worktree .gitignore"
+            );
+        }
+
+        Ok(())
     }
 
     /// Create SENTINEL's settings.json with read-only permissions.
@@ -165,6 +192,8 @@ impl Provisioner {
 
     /// Create the shared directory structure.
     pub fn create_shared_structure(&self, shared: &Path) -> Result<()> {
+        let already_exists = shared.exists();
+
         fs::create_dir_all(shared).context("Failed to create shared directory")?;
 
         // Clean up the legacy sentinel subdirectory from older runs.
@@ -181,6 +210,16 @@ impl Provisioner {
             "# Shared artifacts are runtime state, not committed\n*\n!.gitignore\n",
         )
         .context("Failed to write .gitignore")?;
+
+        // On re-provision (e.g. CI fix, conflict rework), write a fresh WORKLOG.md
+        // so the watchdog doesn't see a stale mtime from a previous lifecycle and
+        // immediately declare the pair stalled.
+        if already_exists {
+            let worklog_path = shared.join("WORKLOG.md");
+            fs::write(&worklog_path, "# Worklog\n\n")
+                .context("Failed to reset WORKLOG.md on re-provision")?;
+            debug!(path = %worklog_path.display(), "Reset WORKLOG.md for re-provisioned pair");
+        }
 
         debug!(path = %shared.display(), "Shared directory structure created");
         Ok(())
