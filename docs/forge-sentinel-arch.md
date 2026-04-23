@@ -340,19 +340,21 @@ the ticket is flagged as BLOCKED with reason REBASE_CONFLICT.
 └── orchestration/
     ├── pairs/
     │   ├── pair-1/
-    │   │   └── shared/             ← FORGE-1 ↔ SENTINEL-1 communication
-    │   │       ├── TICKET.md
-    │   │       ├── TASK.md
-    │   │       ├── PLAN.md
-    │   │       ├── CONTRACT.md
-    │   │       ├── WORKLOG.md
-    │   │       ├── HANDOFF.md      ← written at context reset
-    │   │       ├── segment-1-eval.md
-    │   │       ├── segment-N-eval.md
-    │   │       ├── final-review.md
-    │   │       └── STATUS.json     ← terminal signal
+    │   │   └── T-42/                  ← ticket-scoped per issue
+    │   │       └── shared/             ← FORGE-1 ↔ SENTINEL-1 communication
+    │   │           ├── TICKET.md
+    │   │           ├── TASK.md
+    │   │           ├── PLAN.md
+    │   │           ├── CONTRACT.md
+    │   │           ├── WORKLOG.md
+    │   │           ├── HANDOFF.md      ← written at context reset
+    │   │           ├── segment-1-eval.md
+    │   │           ├── segment-N-eval.md
+    │   │           ├── final-review.md
+    │   │           └── STATUS.json     ← terminal signal
     │   └── pair-2/
-    │       └── shared/ ...
+    │       └── T-43/
+    │           └── shared/ ...
     │
     └── plugin/                     ← Orchestration plugin (loaded by all agents)
         ├── mcp/
@@ -363,7 +365,10 @@ the ticket is flagged as BLOCKED with reason REBASE_CONFLICT.
 
 **Key separation:**
 - `worktrees/pair-N/` — the codebase FORGE works in (Git-managed)
-- `orchestration/pairs/pair-N/shared/` — the communication channel (not in Git)
+- `worktrees/pair-N/.claude/` — provisioned config for FORGE (gitignored, runtime-only — may contain secrets)
+- `orchestration/pairs/pair-N/T-XX/shared/` — the communication channel (not in Git, scoped per ticket)
+
+Any file in the worktree that contains secrets (not just `.claude/`) is caught by the generic secret scanning and redaction system before push.
 
 The `shared/` directory is explicitly in `.gitignore`. It is runtime
 state, not project state. LORE reads from it for documentation but
@@ -537,6 +542,14 @@ Each pair's `mcp.json` is generated dynamically by the harness with environment-
 **Location:** `worktrees/pair-N/.claude/mcp.json` (FORGE) and `orchestration/pairs/pair-N/sentinel/.claude/mcp.json` (SENTINEL)
 
 **Environment variable substitution:** The harness replaces `${VAR}` placeholders with actual values before writing the config.
+
+**Security:** The `GITHUB_PERSONAL_ACCESS_TOKEN` is embedded directly in the `env` block of `mcp.json` because the GitHub MCP server requires it at startup. To prevent secrets from ever reaching the remote repository — in this file or any other — multiple generic safeguards are in place:
+- Known credential directories (`.claude/`, `.env.local`) are added to the worktree's `.gitignore` during provisioning, and any directory containing a detected secret is dynamically added
+- `scan_and_scrub_secrets()` recursively scans all text files in the worktree for known secret patterns and redacts them before any commit
+- `git_add_safe()` untracks any already-tracked files that contain secrets, regardless of directory
+- Push rejection (GH013) triggers history rewriting to remove all secret-containing files from prior commits
+
+See [`orchestration/agent/standards/SECURITY.md`](../../orchestration/agent/standards/SECURITY.md) for the full security policy.
 
 ### Tool Catalog
 
@@ -823,9 +836,9 @@ FILE="${CLAUDE_TOOL_INPUT_FILE_PATH}"
 PAIR_ID="${SPRINTLESS_PAIR_ID}"
 LOCKS_DIR="orchestration/locks"
 
-# Skip lock check for shared/ artifacts — those are pair-scoped already
+# Skip lock check for shared/ artifacts — those are pair+ticket-scoped already
 case "$FILE" in
-  *orchestration/pairs/*/shared/*)
+  *orchestration/pairs/*/*/shared/*)
     exit 0
     ;;
 esac
@@ -898,7 +911,7 @@ WORKTREE="${SPRINTLESS_WORKTREE}"
 
 # For shared/ artifacts, ensure atomic write was used (.tmp + rename pattern)
 case "$FILE" in
-  *orchestration/pairs/*/shared/*)
+  *orchestration/pairs/*/*/shared/*)
     # Verify file was written atomically (should never see .tmp files at this point)
     if [[ "$FILE" == *.tmp ]]; then
       echo "ERROR: Temporary file leaked to filesystem: ${FILE}"
@@ -1137,7 +1150,7 @@ FILE="${CLAUDE_TOOL_INPUT_FILE_PATH}"
 
 # For shared/ artifacts, ensure atomic write
 case "$FILE" in
-  *orchestration/pairs/*/shared/*)
+  *orchestration/pairs/*/*/shared/*)
     # Write to .tmp first, then the agent should rename
     if [[ "$FILE" != *.tmp ]]; then
       # Verify the final file exists (atomic rename completed)
@@ -1856,6 +1869,37 @@ confirms the mechanical conditions are met and executes the merge.
 
 ## 17. Failure Modes and Recovery
 
+### CI failure on PR — rework cycle
+
+```
+VESSEL detects CI failure on PR
+      │
+      ▼
+VESSEL writes CI_FIX.md to pair-N/shared/
+      │
+      ▼
+NEXUS re-assigns worker from Done → Assigned
+Ticket status: Completed → InProgress
+      │
+      ▼
+Pair lifecycle restarts:
+  - CI_FIX.md detected → plan_approved + final_approved = true
+  - build_forge_prompt checks CI_FIX.md BEFORE CONTRACT.md
+    → generates rework_prompt() with CI fix instructions
+  - FORGE pushes fixes to existing PR branch (NOT a new PR)
+  - FORGE writes STATUS.json with PR_OPENED + same PR number
+      │
+      ▼
+VESSEL re-checks CI on updated PR
+  ┌───┴───┐
+Green    Still failing
+  │         │
+Merge    CI_FIX.md again
+          (max 3 attempts, then ticket Failed)
+```
+
+**Critical:** The `build_forge_prompt` function must check CI_FIX.md / CONFLICT_RESOLUTION.md **before** CONTRACT.md. If CONTRACT.md with `status: AGREED` is checked first, FORGE enters normal implementation mode and re-implements the same segments instead of fixing CI failures.
+
 ### FORGE stalls — no WORKLOG update for N minutes
 
 ```
@@ -1887,7 +1931,7 @@ Harness writes STATUS.json:
 ↓
 NEXUS escalates to human via Slack:
   "pair-1 T-42 segment 3 cannot be agreed after 5 cycles.
-   See orchestration/pairs/pair-1/shared/segment-3-eval.md history."
+   See orchestration/pairs/pair-1/T-42/shared/segment-3-eval.md history."
 ```
 
 ### Contract disagreement (> 3 rounds)
@@ -1923,6 +1967,44 @@ FORGE stops immediately
 Writes STATUS.json: BLOCKED / FILE_LOCK_CONFLICT
 NEXUS resolves by completing the conflicting pair first
 ```
+
+### Push rejected by GitHub secret scanning (GH013)
+
+When the forge agent pushes a branch and GitHub's push protection detects
+secrets in the commit history (e.g., a PAT in any file — not just `.claude/`):
+
+```
+git push → rejected with GH013: "Push cannot contain secrets"
+  path: <any-file-path>
+↓
+Forge agent detects GH013 in push stderr
+↓
+Scan entire worktree for secrets:
+  - Recursively scan all text files for known secret patterns
+  - Replace literal values with placeholder references
+  - Dynamically add directories containing secrets to .gitignore
+  - Untrack any tracked files that contain secrets (git rm --cached)
+  - git add -A + commit scrubbed state
+↓
+Rewrite git history:
+  git filter-branch to remove all secret-containing files from prior commits
+  (not limited to any specific directory)
+↓
+Retry push
+↓
+If retry succeeds:
+  Continue to PR creation
+If retry still fails:
+  Mark worker as Blocked with full error detail:
+  "Push rejected: secrets detected in git history — GH013: ..."
+  NEXUS reads specific error, can make informed decision
+```
+
+**Critical:** The blocked reason includes the actual GitHub error message, not a generic "needs push/PR creation". This prevents the infinite blind retry loop where NEXUS would keep approving the same failing push.
+
+**Also critical:** Force-push (`--force-with-lease`) is NOT used for secret scanning rejections — only for genuine non-fast-forward issues. Force-pushing a secret scanning violation would still be rejected.
+
+**Generic protection:** The scan covers all text files in the worktree, not just `.claude/`. If an agent accidentally writes a secret into a source file, config file, or `.env` file, the same safeguards apply.
 
 ---
 
@@ -1998,6 +2080,22 @@ pub enum FsEvent {
     FinalReviewWritten,          // SENTINEL approved all segments
     StatusJsonWritten,           // Terminal signal (PR_OPENED, BLOCKED, etc.)
     HandoffWritten,              // Context reset requested
+}
+
+/// Per-mode SENTINEL retry tracking — each mode (plan, segment-N, final)
+/// has independent retry state, preventing a plan-review retry from
+/// consuming a segment-eval retry budget.
+struct SentinelRetryState {
+    plan_review_retries: u32,
+    segment_eval_retries: HashMap<u32, u32>,
+    final_review_retries: u32,
+}
+
+/// Records the last SENTINEL failure for inclusion in HANDOFF.md,
+/// so a respawned FORGE knows why SENTINEL failed and can adapt.
+struct SentinelFailureInfo {
+    mode: SentinelMode,
+    reason: String,
 }
 
 pub struct ForgeSentinelPair {
@@ -2308,7 +2406,7 @@ echo ""
 # Step 4: Harness provisions pair-1 worktree
 log_harness "pair-1" "Provisioning worktree for T-42..."
 log_harness "pair-1" "  git worktree add worktrees/pair-1 -b forge-1/T-42"
-log_harness "pair-1" "  Created orchestration/pairs/pair-1/shared/"
+log_harness "pair-1" "  Created orchestration/pairs/pair-1/T-42/shared/"
 log_harness "pair-1" "  Generated worktrees/pair-1/.claude/settings.json"
 log_harness "pair-1" "  Generated worktrees/pair-1/.claude/mcp.json"
 log_harness "pair-1" "  Symlinked plugin to worktrees/pair-1/.claude/plugins/orchestration"
@@ -2320,8 +2418,8 @@ log_harness "pair-1" "Spawning FORGE process..."
 log_forge "pair-1" "Session started (context window: 200k tokens)"
 log_forge "pair-1" "Hook: session_start.sh"
 log_forge "pair-1" "  NEW SESSION: No handoff found."
-log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TICKET.md"
-log_forge "pair-1" "  Reading orchestration/pairs/pair-1/shared/TASK.md"
+log_forge "pair-1" "  Reading orchestration/pairs/pair-1/T-42/shared/TICKET.md"
+log_forge "pair-1" "  Reading orchestration/pairs/pair-1/T-42/shared/TASK.md"
 log_success "FORGE-1 spawned"
 echo ""
 
@@ -2596,5 +2694,9 @@ The FORGE-SENTINEL pair architecture (v3) provides autonomous multi-agent ticket
 | Race-condition file locks | Potential conflicts | Redis SET NX atomic locking |
 | Missing pre_write_check | No enforcement of locks | Hook blocks writes before execution |
 | No atomic writes | inotify fires on partial writes | .tmp + rename pattern enforced |
+| Secrets pushed to GitHub | GitHub push protection blocks push, infinite retry loop | .claude/ gitignored + secret scrubbing + history rewrite + accurate blocked reasons |
+| Generic blocked reasons | NEXUS blindly re-approves failing pushes | Actual error in reason (e.g., "GH013: secrets in .claude/mcp.json") |
+| Force-push on all rejections | Worsens secret scanning violations | Only force-push on non-fast-forward, never on GH013 |
+| CI fix re-entered implementation mode | FORGE ignored CI_FIX.md, re-implemented same segments, PR never fixed | `build_forge_prompt` checks CI_FIX.md/CONFLICT_RESOLUTION.md before CONTRACT.md; `final_approved` skips redundant SENTINEL spawns |
 
 The v3 design is **production-ready** with all critical gaps addressed. Implementation can proceed using the corrected Rust structure in Section 18.

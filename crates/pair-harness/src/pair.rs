@@ -24,8 +24,188 @@ use crate::watcher::SharedDirWatcher;
 use crate::worktree::{MergeMainResult, WorktreeManager};
 
 const DEFAULT_SENTINEL_TIMEOUT_SECS: u64 = 120;
-const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300; // 5 minutes to write PLAN.md
+const FORGE_STARTUP_TIMEOUT_SECS: u64 = 300;
 const MAX_SENTINEL_RETRIES: u32 = 2;
+const MIN_SENTINEL_RETRY_INTERVAL_SECS: u64 = 30;
+
+/// Normalize agent-written STATUS.json status strings to canonical values.
+///
+/// LLM agents frequently write status variants that don't match the expected
+/// canonical set. This function maps common synonyms and misspellings to the
+/// closest canonical status so the pair lifecycle can proceed instead of
+/// falling into the "unrecognized — blocked" path.
+fn normalize_status(raw: &str) -> String {
+    let upper = raw.trim().to_uppercase();
+
+    // Exact matches that are already canonical — pass through unchanged.
+    match upper.as_str() {
+        "PR_OPENED"
+        | "COMPLETE"
+        | "COMPLETED"
+        | "SEGMENTS_COMPLETE"
+        | "SEGMENT_COMPLETE_AWAITING_REVIEW"
+        | "ALL_SEGMENTS_DONE"
+        | "IMPLEMENTATION_COMPLETE"
+        | "BLOCKED"
+        | "FUEL_EXHAUSTED"
+        | "PENDING_REVIEW"
+        | "APPROVED_READY"
+        | "AWAITING_SENTINEL_REVIEW" => return upper,
+        _ => {}
+    }
+
+    // Fuzzy mapping: group by canonical target.
+    // "DONE" / "FINISHED" / "SUCCESS" / "READY" → COMPLETE (work done, check PR metadata)
+    // "PR_CREATED" / "PR_SUBMITTED" / "PR_MERGED" → PR_OPENED
+    // "FAILED" / "ERROR" / "STUCK" → BLOCKED
+    // "PAUSED" / "WAITING" / "NEEDS_REVIEW" → PENDING_REVIEW
+    match upper.as_str() {
+        "DONE"
+        | "FINISHED"
+        | "SUCCESS"
+        | "SUCCESSFUL"
+        | "READY"
+        | "WORK_COMPLETE"
+        | "WORK_DONE"
+        | "IMPLEMENTATION_DONE"
+        | "IMPLEMENTED"
+        | "TASK_COMPLETE"
+        | "TASK_DONE"
+        | "RESOLVED" => "COMPLETE".to_string(),
+
+        "PR_CREATED" | "PR_SUBMITTED" | "PR_OPEN" | "PULL_REQUEST_OPENED" | "PR_READY" => {
+            "PR_OPENED".to_string()
+        }
+
+        "FAILED" | "FAILURE" | "ERROR" | "ERRORED" | "STUCK" | "CANNOT_PROCEED"
+        | "UNABLE_TO_COMPLETE" | "ABORTED" | "ABANDONED" => "BLOCKED".to_string(),
+
+        "PAUSED" | "WAITING" | "NEEDS_REVIEW" | "REVIEW_REQUESTED" | "AWAITING_REVIEW"
+        | "IN_REVIEW" | "PARTIAL" | "PARTIALLY_DONE" => "PENDING_REVIEW".to_string(),
+
+        // Segment variants: SEGMENT_1_DONE, SEGMENT_2_COMPLETE, etc.
+        _ if upper.starts_with("SEGMENT_")
+            && (upper.ends_with("_DONE")
+                || upper.ends_with("_COMPLETE")
+                || upper.ends_with("_FINISHED")) =>
+        {
+            // Preserve the original so the SEGMENT_*_DONE pattern still matches downstream.
+            upper
+        }
+
+        // Keyword-based fuzzy matching: infer intent from keywords in the status string.
+        // This is the fallback before treating the status as unrecognized.
+        // Rules are ordered from most-specific to least-specific to avoid incorrect mapping.
+        _ => {
+            // 1. PR-related keywords → PR_OPENED
+            if (upper.contains("PR") || upper.contains("PULL_REQUEST"))
+                && (upper.contains("OPEN") || upper.contains("CREAT") || upper.contains("SUBMIT"))
+            {
+                info!(
+                    raw = raw,
+                    matched = "PR_OPENED",
+                    "Keyword-based status normalization: status contains PR + open/create/submit keywords"
+                );
+                return "PR_OPENED".to_string();
+            }
+
+            // 2. Exhaust/fuel keywords → FUEL_EXHAUSTED
+            if upper.contains("EXHAUST") || upper.contains("FUEL") || upper.contains("BUDGET") {
+                info!(
+                    raw = raw,
+                    matched = "FUEL_EXHAUSTED",
+                    "Keyword-based status normalization: status contains exhaust/fuel/budget keywords"
+                );
+                return "FUEL_EXHAUSTED".to_string();
+            }
+
+            // 3. Sentinel keywords → AWAITING_SENTINEL_REVIEW (more specific than generic REVIEW)
+            if upper.contains("SENTINEL") {
+                info!(
+                    raw = raw,
+                    matched = "AWAITING_SENTINEL_REVIEW",
+                    "Keyword-based status normalization: status contains sentinel keyword"
+                );
+                return "AWAITING_SENTINEL_REVIEW".to_string();
+            }
+
+            // 4. Approved/ready keywords → APPROVED_READY
+            if upper.contains("APPROVE") || (upper.contains("READY") && !upper.contains("PR")) {
+                info!(
+                    raw = raw,
+                    matched = "APPROVED_READY",
+                    "Keyword-based status normalization: status contains approve/ready keywords"
+                );
+                return "APPROVED_READY".to_string();
+            }
+
+            // 5. Review keywords → PENDING_REVIEW (most common unrecognized status)
+            //    Exclude statuses that also contain completion keywords (DONE/COMPLETE/FINISH/SUCCESS)
+            //    since "REVIEW_COMPLETE" means the review is done, not that it's pending.
+            let has_completion_keyword = upper.contains("DONE")
+                || upper.contains("COMPLETE")
+                || upper.contains("FINISH")
+                || upper.contains("SUCCESS");
+            if !has_completion_keyword
+                && (upper.contains("REVIEW")
+                    || upper.contains("WAIT")
+                    || upper.contains("PAUSE")
+                    || upper.contains("HOLD"))
+            {
+                info!(
+                    raw = raw,
+                    matched = "PENDING_REVIEW",
+                    "Keyword-based status normalization: status contains review/wait/pause/hold keywords"
+                );
+                return "PENDING_REVIEW".to_string();
+            }
+
+            // 6. Done/complete/finish keywords → COMPLETE
+            if upper.contains("DONE")
+                || upper.contains("COMPLETE")
+                || upper.contains("FINISH")
+                || upper.contains("SUCCESS")
+            {
+                info!(
+                    raw = raw,
+                    matched = "COMPLETE",
+                    "Keyword-based status normalization: status contains done/complete/finish/success keywords"
+                );
+                return "COMPLETE".to_string();
+            }
+
+            // 7. Blocked/fail/error/stuck keywords → BLOCKED
+            if upper.contains("BLOCK")
+                || upper.contains("FAIL")
+                || upper.contains("ERROR")
+                || upper.contains("STUCK")
+                || upper.contains("ABORT")
+                || upper.contains("ABANDON")
+                || upper.contains("CANNOT")
+            {
+                info!(
+                    raw = raw,
+                    matched = "BLOCKED",
+                    "Keyword-based status normalization: status contains block/fail/error/stuck keywords"
+                );
+                return "BLOCKED".to_string();
+            }
+
+            // 8. Segment keywords → preserve as non-terminal segment status
+            if upper.contains("SEGMENT") {
+                info!(
+                    raw = raw,
+                    matched = &upper,
+                    "Keyword-based status normalization: status contains segment keyword, preserving as non-terminal"
+                );
+                return upper;
+            }
+
+            // No keyword match — truly unrecognized
+            raw.to_string()
+        }
+    }
+}
 
 const ENV_OVERHEAD_NETWORK_SECS: u64 = 15;
 const ENV_OVERHEAD_STREAMING_SECS: u64 = 10;
@@ -50,6 +230,61 @@ struct SentinelTracker {
     timeout_secs: u64,
 }
 
+struct SentinelFailureInfo {
+    mode: SentinelMode,
+    reason: String,
+}
+
+struct SentinelRetryState {
+    plan_review_retries: u32,
+    segment_eval_retries: std::collections::HashMap<u32, u32>,
+    final_review_retries: u32,
+}
+
+impl SentinelRetryState {
+    fn new() -> Self {
+        Self {
+            plan_review_retries: 0,
+            segment_eval_retries: std::collections::HashMap::new(),
+            final_review_retries: 0,
+        }
+    }
+
+    fn get(&self, mode: &SentinelMode) -> u32 {
+        match mode {
+            SentinelMode::PlanReview => self.plan_review_retries,
+            SentinelMode::SegmentEval(n) => *self.segment_eval_retries.get(n).unwrap_or(&0),
+            SentinelMode::FinalReview => self.final_review_retries,
+        }
+    }
+
+    fn increment(&mut self, mode: &SentinelMode) {
+        match mode {
+            SentinelMode::PlanReview => self.plan_review_retries += 1,
+            SentinelMode::SegmentEval(n) => {
+                *self.segment_eval_retries.entry(*n).or_insert(0) += 1;
+            }
+            SentinelMode::FinalReview => self.final_review_retries += 1,
+        }
+    }
+
+    fn reset(&mut self, mode: &SentinelMode) {
+        match mode {
+            SentinelMode::PlanReview => self.plan_review_retries = 0,
+            SentinelMode::SegmentEval(n) => {
+                self.segment_eval_retries.remove(n);
+            }
+            SentinelMode::FinalReview => self.final_review_retries = 0,
+        }
+    }
+
+    fn reset_all(&mut self) {
+        self.plan_review_retries = 0;
+        self.segment_eval_retries.clear();
+        self.final_review_retries = 0;
+    }
+}
+
 /// The main FORGE-SENTINEL pair lifecycle manager.
 pub struct ForgeSentinelPair {
     config: PairConfig,
@@ -61,7 +296,9 @@ pub struct ForgeSentinelPair {
     start_time: Instant,
     sentinel_tracker: Option<SentinelTracker>,
     forge_spawn_time: Instant,
-    sentinel_retries: u32,
+    sentinel_retries: SentinelRetryState,
+    last_sentinel_spawn_time: Option<Instant>,
+    last_sentinel_failure: Option<SentinelFailureInfo>,
     ticket_id: String,
     plan_approved: bool,
     final_approved: bool,
@@ -97,7 +334,9 @@ impl ForgeSentinelPair {
             start_time: Instant::now(),
             sentinel_tracker: None,
             forge_spawn_time: Instant::now(),
-            sentinel_retries: 0,
+            sentinel_retries: SentinelRetryState::new(),
+            last_sentinel_spawn_time: None,
+            last_sentinel_failure: None,
             ticket_id: String::new(),
             plan_approved: false,
             final_approved: false,
@@ -144,6 +383,17 @@ impl ForgeSentinelPair {
             info!(
                 pair = %self.config.pair_id,
                 "CONFLICT_RESOLUTION.md detected — skipping plan/final review, forge will resolve conflicts"
+            );
+        }
+
+        // Check if this is a CI fix rework — skip plan review, go straight to implementation
+        let ci_fix_path = self.config.shared.join("CI_FIX.md");
+        if ci_fix_path.exists() {
+            self.plan_approved = true;
+            self.final_approved = true;
+            info!(
+                pair = %self.config.pair_id,
+                "CI_FIX.md detected — skipping plan/final review, forge will fix CI failures"
             );
         }
 
@@ -204,6 +454,39 @@ impl ForgeSentinelPair {
             }
         }
 
+        // 1c. If CI fix rework: merge origin/main so FORGE has latest workflow files + detects conflicts
+        if ci_fix_path.exists() {
+            match self.worktree.merge_origin_main(&self.config.worktree) {
+                Ok(MergeMainResult::Clean) => {
+                    info!(
+                        pair = %self.config.pair_id,
+                        "origin/main merged cleanly before CI fix — FORGE has latest workflows"
+                    );
+                    if let Err(e) = self.worktree.force_push_branch(&self.config.worktree) {
+                        warn!(
+                            pair = %self.config.pair_id,
+                            error = %e,
+                            "Failed to force-push after clean merge — GitHub PR may be stale"
+                        );
+                    }
+                }
+                Ok(MergeMainResult::Conflict { conflicted_files }) => {
+                    info!(
+                        pair = %self.config.pair_id,
+                        files = conflicted_files.len(),
+                        "Merge conflicts surfaced during CI fix prep — FORGE will resolve both conflicts and CI failures"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        pair = %self.config.pair_id,
+                        error = %e,
+                        "Failed to merge origin/main before CI fix — FORGE may not have latest workflows"
+                    );
+                }
+            }
+        }
+
         // 2. Provision configuration files
         self.provision_config(ticket).await?;
 
@@ -212,6 +495,10 @@ impl ForgeSentinelPair {
 
         // 4. Create shared directory structure
         self.create_shared_structure().await?;
+
+        // 4b. Reset watchdog so stale WORKLOG.md mtime from a previous
+        //     lifecycle doesn't cause an immediate stall detection.
+        self.watchdog.reset();
 
         // 5. Write TICKET.md and TASK.md
         self.write_task_context(ticket).await?;
@@ -252,13 +539,18 @@ impl ForgeSentinelPair {
                         let mode = tracker.mode.clone();
                         if status.success() {
                             self.materialize_sentinel_artifact(&mode).await?;
-                            self.sentinel_retries = 0;
+                            self.sentinel_retries.reset(&mode);
                         } else {
                             warn!(
                                 mode = ?mode,
                                 exit_code = ?status.code(),
                                 "SENTINEL exited with error before producing a watched artifact"
                             );
+                            self.last_sentinel_failure = Some(SentinelFailureInfo {
+                                mode: mode.clone(),
+                                reason: format!("exit code {:?}", status.code()),
+                            });
+                            self.sentinel_retries.reset(&mode);
                         }
                         self.sentinel_tracker = None;
                     }
@@ -278,7 +570,23 @@ impl ForgeSentinelPair {
                         "SENTINEL timed out after {}s",
                         tracker.timeout_secs
                     );
+                    let mode = tracker.mode.clone();
+                    let timeout_secs = tracker.timeout_secs;
                     let _ = self.process.kill(&mut tracker.child).await;
+                    let stderr_excerpt = self.read_sentinel_stderr_excerpt(&mode).await;
+                    self.last_sentinel_failure = Some(SentinelFailureInfo {
+                        mode: mode.clone(),
+                        reason: format!("timeout after {}s", timeout_secs),
+                    });
+                    let _ = self
+                        .reset
+                        .append_sentinel_failure(
+                            &format!("{:?}", mode),
+                            &format!("timeout after {}s", timeout_secs),
+                            stderr_excerpt.as_deref(),
+                        )
+                        .await;
+                    self.sentinel_retries.reset(&mode);
                     self.sentinel_tracker = None;
                 }
             }
@@ -297,6 +605,7 @@ impl ForgeSentinelPair {
                 if self.process.is_running(forge).await {
                     warn!("Killing stuck FORGE process and respawning");
                     self.process.kill(forge).await?;
+                    self.sentinel_retries.reset_all();
                     *forge = self.spawn_forge_resume().await?;
                     self.reset.increment_reset();
                 }
@@ -330,6 +639,7 @@ impl ForgeSentinelPair {
                                 "Contract agreed - respawning FORGE to begin implementation"
                             );
                             self.process.kill(forge).await?;
+                            self.sentinel_retries.reset_all();
                             *forge = self.spawn_forge_resume().await?;
                         } else {
                             info!("Contract has issues - FORGE must revise plan");
@@ -337,7 +647,9 @@ impl ForgeSentinelPair {
                     }
 
                     FsEvent::WorklogUpdated => {
-                        if self.all_segments_approved().await? {
+                        if self.final_approved {
+                            debug!("Worklog updated but final already approved — skipping SENTINEL spawn");
+                        } else if self.all_segments_approved().await? {
                             info!("All segments complete - spawning SENTINEL for final review");
                             self.spawn_sentinel_for_final().await?;
                         } else if let Some(segment_n) = self.next_segment_to_eval().await? {
@@ -373,8 +685,28 @@ impl ForgeSentinelPair {
 
                     FsEvent::StatusJsonWritten => {
                         self.sentinel_tracker = None;
+                        let awaiting_review = self.check_status_awaiting_sentinel_review().await;
                         if let Some(status) = self.read_status().await? {
                             return Ok(status);
+                        }
+                        if awaiting_review && self.sentinel_tracker.is_none() {
+                            if self.all_segments_approved().await? {
+                                info!(
+                                    "AWAITING_SENTINEL_REVIEW — spawning SENTINEL for final review"
+                                );
+                                self.spawn_sentinel_for_final().await?;
+                            } else if let Some(segment_n) = self.next_segment_to_eval().await? {
+                                info!(
+                                    "AWAITING_SENTINEL_REVIEW — spawning SENTINEL for segment {} eval",
+                                    segment_n
+                                );
+                                self.spawn_sentinel_for_segment(segment_n).await?;
+                            } else {
+                                info!(
+                                    "AWAITING_SENTINEL_REVIEW — spawning SENTINEL for final review"
+                                );
+                                self.spawn_sentinel_for_final().await?;
+                            }
                         }
                     }
 
@@ -382,6 +714,7 @@ impl ForgeSentinelPair {
                         self.sentinel_tracker = None;
                         info!("Context reset - respawning FORGE");
                         self.process.kill(forge).await?;
+                        self.sentinel_retries.reset_all();
                         *forge = self.spawn_forge_resume().await?;
                         self.reset.increment_reset();
                     }
@@ -392,7 +725,21 @@ impl ForgeSentinelPair {
             if self.start_time.elapsed().as_secs().wrapping_rem(60) == 0 {
                 let status = self.watchdog.check_stalled()?;
                 if status.is_stalled() {
-                    warn!("Pair stalled - no WORKLOG update for too long");
+                    let total_elapsed = self.start_time.elapsed().as_secs();
+                    let worklog_elapsed = status.elapsed().unwrap_or_default().as_secs();
+                    warn!(
+                        elapsed_secs = worklog_elapsed,
+                        "Pair stalled - no WORKLOG update for too long, killing pair"
+                    );
+                    let _ = self.process.kill(forge).await;
+                    self.cleanup(forge).await?;
+                    return Ok(PairOutcome::Blocked {
+                        reason: format!(
+                            "Pair stalled — no progress for {}s (total elapsed: {}s)",
+                            worklog_elapsed, total_elapsed
+                        ),
+                        blockers: vec![],
+                    });
                 }
             }
 
@@ -417,6 +764,7 @@ impl ForgeSentinelPair {
                                 self.read_contract_timeout_profile().await?;
                                 info!(timeout = ?self.contract_timeout, "Contract agreed (drained after FORGE exit) - respawning FORGE to begin implementation");
                                 self.process.kill(forge).await?;
+                                self.sentinel_retries.reset_all();
                                 *forge = self.spawn_forge_resume().await?;
                             }
                         }
@@ -445,8 +793,25 @@ impl ForgeSentinelPair {
                             }
                         }
                         FsEvent::StatusJsonWritten => {
+                            let awaiting_review =
+                                self.check_status_awaiting_sentinel_review().await;
                             if let Some(status) = self.read_status().await? {
                                 return Ok(status);
+                            }
+                            if awaiting_review && self.sentinel_tracker.is_none() {
+                                if self.all_segments_approved().await? {
+                                    info!("AWAITING_SENTINEL_REVIEW (drained) — spawning SENTINEL for final review");
+                                    self.spawn_sentinel_for_final().await?;
+                                } else if let Some(segment_n) = self.next_segment_to_eval().await? {
+                                    info!(
+                                        "AWAITING_SENTINEL_REVIEW (drained) — spawning SENTINEL for segment {} eval",
+                                        segment_n
+                                    );
+                                    self.spawn_sentinel_for_segment(segment_n).await?;
+                                } else {
+                                    info!("AWAITING_SENTINEL_REVIEW (drained) — spawning SENTINEL for final review");
+                                    self.spawn_sentinel_for_final().await?;
+                                }
                             }
                         }
                         FsEvent::HandoffWritten => {
@@ -458,6 +823,7 @@ impl ForgeSentinelPair {
                 // After draining events, re-evaluate state based on filesystem
                 if self.reset.has_handoff() {
                     info!("FORGE exited with handoff - respawning");
+                    self.sentinel_retries.reset_all();
                     *forge = self.spawn_forge_resume().await?;
                     self.reset.increment_reset();
                 } else if self.config.shared.join("STATUS.json").exists() {
@@ -482,15 +848,21 @@ impl ForgeSentinelPair {
                             info!("FORGE exited after writing PLAN.md - spawning SENTINEL for plan review");
                             self.spawn_sentinel_for_plan().await?;
                         } else if contract_exists && self.plan_approved && !worklog_exists {
-                            // Contract agreed but no implementation yet - respawn FORGE to implement
                             info!("FORGE exited, contract agreed - respawning FORGE to begin implementation");
+                            self.sentinel_retries.reset_all();
                             *forge = self.spawn_forge_resume().await?;
                         } else if worklog_exists {
                             // Implementation in progress - check segment status
                             if self.all_segments_approved().await? {
-                                if !final_review_exists {
+                                if !final_review_exists && !self.final_approved {
                                     info!("FORGE exited, all segments approved - spawning SENTINEL for final review");
                                     self.spawn_sentinel_for_final().await?;
+                                } else {
+                                    // Final review already approved (CI fix / conflict rework)
+                                    // or already exists — respawn FORGE to continue rework
+                                    info!("FORGE exited with final approval already granted — respawning to continue rework");
+                                    self.sentinel_retries.reset_all();
+                                    *forge = self.spawn_forge_resume().await?;
                                 }
                             } else if let Some(segment_n) = self.next_segment_to_eval().await? {
                                 info!(
@@ -503,17 +875,17 @@ impl ForgeSentinelPair {
                                 // This is expected with --print mode: FORGE exits after each segment,
                                 // and we just respawn to continue the next one.
                                 info!("FORGE exited after segment work - respawning to continue implementation");
+                                self.sentinel_retries.reset_all();
                                 *forge = self.spawn_forge_resume().await?;
                             } else {
-                                // No segments remaining in plan, no eval needed, but not all approved.
-                                // This is a genuine stale state - count as a reset.
                                 info!("FORGE exited with partial worklog - respawning to continue implementation");
+                                self.sentinel_retries.reset_all();
                                 *forge = self.spawn_forge_resume().await?;
                                 self.reset.increment_reset();
                             }
                         } else {
-                            // No clear state - respawn
                             info!("FORGE exited after making progress - respawning to continue");
+                            self.sentinel_retries.reset_all();
                             *forge = self.spawn_forge_resume().await?;
                         }
                     }
@@ -531,6 +903,7 @@ impl ForgeSentinelPair {
                         // Ran for a while but produced nothing - synthesize handoff and respawn
                         warn!("FORGE exited unexpectedly after {}s without progress - synthesizing handoff", forge_uptime);
                         self.reset.synthesize_handoff().await?;
+                        self.sentinel_retries.reset_all();
                         *forge = self.spawn_forge_resume().await?;
                         self.reset.increment_reset();
                     }
@@ -596,6 +969,7 @@ impl ForgeSentinelPair {
         provisioner.write_ticket(&self.config.shared, ticket)?;
 
         let conflict_path = self.config.shared.join("CONFLICT_RESOLUTION.md");
+        let ci_fix_path = self.config.shared.join("CI_FIX.md");
         let task = if conflict_path.exists() {
             format!(
                 "Resolve merge conflicts for ticket {}.\n\n\
@@ -603,13 +977,96 @@ impl ForgeSentinelPair {
                  CONFLICT_RESOLUTION.md in this directory contains detailed instructions.\n\
                  Resolve all conflict markers, commit, then force-push with 'git push --force-with-lease origin HEAD' (the branch has diverged due to the merge of origin/main).\n\
                  If a PR already exists for this branch, do NOT create a new one — just push and update STATUS.json.\n\
-                 Write STATUS.json with status PR_OPENED, the existing PR URL if known, or create a new PR only if none exists.",
+                 Write STATUS.json with status PR_OPENED, the existing PR URL if known, or create a new PR only if none exists.\n\n\
+                 VALID STATUS.json status values: PR_OPENED, COMPLETE, BLOCKED, FUEL_EXHAUSTED, PENDING_REVIEW. \
+                 Do NOT use any other value.",
                 ticket.id,
                 WorktreeManager::branch_name(&self.config.pair_id, &ticket.id)
             )
+        } else if ci_fix_path.exists() {
+            let ci_fix_content = tokio::fs::read_to_string(&ci_fix_path)
+                .await
+                .unwrap_or_default();
+            let failure_summary = ci_fix_content
+                .lines()
+                .find(|l| l.starts_with("## Failed Checks"))
+                .map(|_| {
+                    let after = ci_fix_content
+                        .split("## Failed Checks\n\n")
+                        .nth(1)
+                        .unwrap_or("");
+                    after
+                        .split("\n## ")
+                        .next()
+                        .unwrap_or(after)
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_else(|| "CI checks failed".to_string());
+            let job_log_section = ci_fix_content
+                .lines()
+                .find(|l| l.starts_with("## Job Log Output"))
+                .map(|_| {
+                    let after = ci_fix_content
+                        .split("## Job Log Output")
+                        .nth(1)
+                        .unwrap_or("");
+                    after.trim().to_string()
+                })
+                .unwrap_or_default();
+            let conflict_notice = if self.config.worktree.join(".git").exists()
+                && std::process::Command::new("git")
+                    .args(["diff", "--name-only", "--diff-filter=U"])
+                    .current_dir(&self.config.worktree)
+                    .output()
+                    .ok()
+                    .map(|o| !o.stdout.is_empty())
+                    .unwrap_or(false)
+            {
+                "\n\n**MERGE CONFLICTS DETECTED:** origin/main was merged into your branch and there are conflict markers.\n\
+                 Resolve ALL conflict markers (lines with <<<<<<<) BEFORE running CI checks.\n".to_string()
+            } else {
+                String::new()
+            };
+            format!(
+                "Fix CI failures for ticket {}.\n\n\
+                 Branch: {}\n\n\
+                 The CI pipeline failed:\n{}\n\n\
+                 {}{}\
+                 CRITICAL RULES:\n\
+                 1. Read .github/workflows/ to find the failing workflow(s). Match the check names above to the job names in the YAML.\n\
+                 2. Run the failing job's exact `run:` steps locally. Install any missing tools first.\n\
+                 3. Resolve ALL merge conflict markers (if any) BEFORE running CI checks.\n\
+                 4. Fix ALL errors, then push ONCE. Do NOT push after fixing only one error — CI will just fail on the next check.\n\
+                 5. You MUST update {}/WORKLOG.md as you work — the watchdog will kill your process if WORKLOG.md is not updated within 20 minutes.\n\n\
+                 Steps:\n\
+                 1. Read .github/workflows/ — find the workflow(s) matching the failed check names above\n\
+                 2. Install any missing tools the workflow expects (pip, npm, ruff, etc.)\n\
+                 3. Install project deps as the workflow does (pip install -r requirements.txt, npm ci, etc.)\n\
+                 4. Resolve any <<<<<<< conflict markers in any files\n\
+                 5. Update WORKLOG.md with what you installed\n\
+                 6. Run the failing job's steps locally using the exact commands from the workflow YAML\n\
+                 7. Fix ALL errors found\n\
+                 8. Update WORKLOG.md with what you fixed\n\
+                 9. Run ALL failing checks again to confirm everything passes\n\
+                 10. git add -A && git commit -m \"fix CI failures\" && git push\n\
+                 11. Write STATUS.json with status PR_OPENED\n\n\
+                 If a PR already exists for this branch, do NOT create a new one — just push and update STATUS.json\n\n\
+                 VALID STATUS.json status values: PR_OPENED, COMPLETE, BLOCKED, FUEL_EXHAUSTED, PENDING_REVIEW. \
+                 Do NOT use any other value — an invalid status will be treated as BLOCKED and your fix will be wasted.",
+                ticket.id,
+                WorktreeManager::branch_name(&self.config.pair_id, &ticket.id),
+                failure_summary,
+                if job_log_section.is_empty() { String::new() } else { format!("## Job Log Output (for reference)\n\n{}\n\n", job_log_section) },
+                conflict_notice,
+                self.config.shared.display(),
+            )
         } else {
             format!(
-                "Implement ticket {}.\n\nBranch: {}\n\nWhen done, open a PR and write STATUS.json.",
+                "Implement ticket {}.\n\nBranch: {}\n\nWhen done, open a PR and write STATUS.json.\n\n\
+                 VALID STATUS.json status values: PR_OPENED, COMPLETE, BLOCKED, FUEL_EXHAUSTED, PENDING_REVIEW, \
+                 AWAITING_SENTINEL_REVIEW, APPROVED_READY, SEGMENT_N_DONE. \
+                 Do NOT use any other value — an invalid status will be treated as BLOCKED and your work wasted.",
                 ticket.id,
                 WorktreeManager::branch_name(&self.config.pair_id, &ticket.id)
             )
@@ -632,7 +1089,9 @@ impl ForgeSentinelPair {
 
     /// Spawn FORGE process in resume mode.
     async fn spawn_forge_resume(&mut self) -> Result<Child> {
+        self.append_sentinel_failure_to_handoff().await?;
         self.forge_spawn_time = Instant::now();
+        self.sentinel_retries.reset_all();
         self.process
             .spawn_forge_resume(
                 &self.config.pair_id,
@@ -672,17 +1131,39 @@ impl ForgeSentinelPair {
         compute_effective_timeout(base_secs, &complexity)
     }
 
+    fn check_sentinel_retry_interval(&self) -> bool {
+        if let Some(last) = self.last_sentinel_spawn_time {
+            let elapsed = last.elapsed().as_secs();
+            if elapsed < MIN_SENTINEL_RETRY_INTERVAL_SECS {
+                debug!(
+                    elapsed_secs = elapsed,
+                    min_secs = MIN_SENTINEL_RETRY_INTERVAL_SECS,
+                    "Sentinel retry too soon — deferring"
+                );
+                return false;
+            }
+        }
+        true
+    }
+
     /// Spawn SENTINEL for plan review.
     async fn spawn_sentinel_for_plan(&mut self) -> Result<()> {
-        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
-            warn!(
-                retries = self.sentinel_retries,
-                "SENTINEL plan review exceeded max retries — forcing changes_requested and reset"
-            );
-            self.reset.increment_reset();
+        if !self.check_sentinel_retry_interval() {
             return Ok(());
         }
-        self.sentinel_retries += 1;
+        let mode = SentinelMode::PlanReview;
+        if self.sentinel_retries.get(&mode) >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries.get(&mode),
+                "SENTINEL plan review exceeded max retries — writing synthetic changes_requested"
+            );
+            self.write_synthetic_plan_rejection().await?;
+            self.reset.increment_reset();
+            self.sentinel_retries.reset(&mode);
+            return Ok(());
+        }
+        self.sentinel_retries.increment(&mode);
+        self.last_sentinel_spawn_time = Some(Instant::now());
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::PlanReview);
         let child = self
             .process
@@ -708,16 +1189,23 @@ impl ForgeSentinelPair {
 
     /// Spawn SENTINEL for segment evaluation.
     async fn spawn_sentinel_for_segment(&mut self, segment: u32) -> Result<()> {
-        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
-            warn!(
-                retries = self.sentinel_retries,
-                segment,
-                "SENTINEL segment eval exceeded max retries — forcing changes_requested and reset"
-            );
-            self.reset.increment_reset();
+        if !self.check_sentinel_retry_interval() {
             return Ok(());
         }
-        self.sentinel_retries += 1;
+        let mode = SentinelMode::SegmentEval(segment);
+        if self.sentinel_retries.get(&mode) >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries.get(&mode),
+                segment,
+                "SENTINEL segment eval exceeded max retries — writing synthetic changes_requested"
+            );
+            self.write_synthetic_segment_rejection(segment).await?;
+            self.reset.increment_reset();
+            self.sentinel_retries.reset(&mode);
+            return Ok(());
+        }
+        self.sentinel_retries.increment(&mode);
+        self.last_sentinel_spawn_time = Some(Instant::now());
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::SegmentEval(segment));
         let child = self
             .process
@@ -749,15 +1237,22 @@ impl ForgeSentinelPair {
             return Ok(());
         }
 
-        if self.sentinel_retries >= MAX_SENTINEL_RETRIES {
-            warn!(
-                retries = self.sentinel_retries,
-                "SENTINEL final review exceeded max retries — forcing changes_requested and reset"
-            );
-            self.reset.increment_reset();
+        if !self.check_sentinel_retry_interval() {
             return Ok(());
         }
-        self.sentinel_retries += 1;
+        let mode = SentinelMode::FinalReview;
+        if self.sentinel_retries.get(&mode) >= MAX_SENTINEL_RETRIES {
+            warn!(
+                retries = self.sentinel_retries.get(&mode),
+                "SENTINEL final review exceeded max retries — writing synthetic rejection"
+            );
+            self.write_synthetic_final_rejection().await?;
+            self.reset.increment_reset();
+            self.sentinel_retries.reset(&mode);
+            return Ok(());
+        }
+        self.sentinel_retries.increment(&mode);
+        self.last_sentinel_spawn_time = Some(Instant::now());
         info!("Spawning SENTINEL for final review");
         let timeout_secs = self.resolve_sentinel_timeout(&SentinelMode::FinalReview);
         let child = self
@@ -790,12 +1285,8 @@ impl ForgeSentinelPair {
         }
 
         let content = tokio::fs::read_to_string(&plan_path).await?;
-
-        // Count segments in PLAN.md
-        let total_segments = content
-            .lines()
-            .filter(|line| line.starts_with("## Segment") || line.starts_with("### Segment"))
-            .count();
+        let implementation_segments = Self::implementation_segments_from_plan(&content);
+        let total_segments = implementation_segments.len();
 
         if total_segments == 0 {
             // If no segments defined, check if WORKLOG.md exists (implementation done)
@@ -804,7 +1295,7 @@ impl ForgeSentinelPair {
 
         // Count approved segment evaluations
         let mut approved_count = 0;
-        for n in 1..=total_segments as u32 {
+        for n in implementation_segments {
             let eval_path = self.config.shared.join(format!("segment-{}-eval.md", n));
             if eval_path.exists() {
                 let eval_content = tokio::fs::read_to_string(&eval_path).await?;
@@ -987,15 +1478,7 @@ impl ForgeSentinelPair {
         }
 
         let plan_content = tokio::fs::read_to_string(&plan_path).await?;
-        let total_in_plan: Vec<u32> = plan_content
-            .lines()
-            .filter(|line| line.starts_with("## Segment") || line.starts_with("### Segment"))
-            .filter_map(|line| {
-                line.split_whitespace()
-                    .nth(2)
-                    .and_then(|s| s.trim_end_matches(':').parse::<u32>().ok())
-            })
-            .collect();
+        let total_in_plan = Self::implementation_segments_from_plan(&plan_content);
 
         if total_in_plan.is_empty() {
             return Ok(None);
@@ -1046,6 +1529,16 @@ impl ForgeSentinelPair {
         }
     }
 
+    async fn check_status_awaiting_sentinel_review(&self) -> bool {
+        let path = self.config.shared.join("STATUS.json");
+        if !path.exists() {
+            return false;
+        }
+        tokio::fs::read_to_string(&path)
+            .await
+            .is_ok_and(|c| c.contains("AWAITING_SENTINEL_REVIEW"))
+    }
+
     /// Read STATUS.json and convert to PairOutcome.
     /// Returns `Ok(None)` if the file exists but is empty (race: inotify fires before flush).
     /// Handles deserialization errors gracefully by logging a warning and returning None,
@@ -1076,11 +1569,18 @@ impl ForgeSentinelPair {
             }
         };
 
-        Ok(Some(match status.status.as_str() {
+        let normalized = normalize_status(&status.status);
+        if normalized != status.status {
+            info!(
+                raw = %status.status,
+                normalized = %normalized,
+                "Normalized unrecognized STATUS.json status to canonical value"
+            );
+        }
+
+        Ok(Some(match normalized.as_str() {
             "PR_OPENED"
             | "COMPLETE"
-            | "complete"
-            | "completed"
             | "COMPLETED"
             | "SEGMENTS_COMPLETE"
             | "SEGMENT_COMPLETE_AWAITING_REVIEW"
@@ -1112,26 +1612,71 @@ impl ForgeSentinelPair {
                 reason: "Fuel exhausted".to_string(),
                 reset_count: status.context_resets,
             },
-            "PENDING_REVIEW" => {
+            "PENDING_REVIEW" | "APPROVED_READY" | "AWAITING_SENTINEL_REVIEW" => {
+                self.archive_non_terminal_status(&normalized).await?;
                 debug!(
-                    status = "PENDING_REVIEW",
-                    "FORGE requests review — treating as non-terminal, continuing event loop"
+                    status = %normalized,
+                    "FORGE requests additional review/work — treating as non-terminal, continuing event loop"
                 );
                 return Ok(None);
             }
             _ => {
-                let s = status.status.as_str();
-                if s.starts_with("SEGMENT_") && s.ends_with("_DONE") {
+                let s = normalized.as_str();
+                if s.starts_with("SEGMENT_")
+                    && (s.ends_with("_DONE")
+                        || s.ends_with("_COMPLETE")
+                        || s.ends_with("_FINISHED"))
+                {
+                    self.archive_non_terminal_status(s).await?;
                     debug!(status = s, "Intermediate segment status in STATUS.json — treating as non-terminal, continuing event loop");
                     return Ok(None);
                 }
-                warn!(
-                    status = s,
-                    "Unrecognized STATUS.json status — treating as fuel exhausted"
-                );
-                PairOutcome::FuelExhausted {
-                    reason: format!("Unknown status: {}", s),
-                    reset_count: self.reset.reset_count(),
+                if status.pr_url.as_ref().is_some_and(|url| !url.is_empty()) {
+                    warn!(
+                        status = %status.status,
+                        pr_url = status.pr_url.as_deref().unwrap_or_default(),
+                        "Unrecognized STATUS.json status with PR metadata — treating as PR_OPENED"
+                    );
+                    PairOutcome::PrOpened {
+                        pr_url: status.pr_url.clone().unwrap_or_default(),
+                        pr_number: status.pr_number.unwrap_or(0),
+                        branch: status.branch.clone().unwrap_or_default(),
+                    }
+                } else {
+                    // Write STATUS_UNRECOGNIZED.md for Nexus fallback re-mapping
+                    let unrecognized_path = self.config.shared.join("STATUS_UNRECOGNIZED.md");
+                    let remap_content = format!(
+                        "# Unrecognized STATUS.json\n\n\
+                        Raw status: `{}`\n\
+                        Normalized: `{}`\n\n\
+                        ## Valid STATUS.json Status Values\n\n\
+                        | Status | Category | When to use |\n\
+                        |---|---|---|\n\
+                        | `PR_OPENED` | Terminal | Work complete, PR created |\n\
+                        | `COMPLETE` | Terminal | All work done |\n\
+                        | `BLOCKED` | Terminal | Cannot proceed |\n\
+                        | `FUEL_EXHAUSTED` | Terminal | Budget/tokens exhausted |\n\
+                        | `PENDING_REVIEW` | Non-terminal | Waiting for review |\n\
+                        | `AWAITING_SENTINEL_REVIEW` | Non-terminal | Segment done, waiting for SENTINEL |\n\
+                        | `APPROVED_READY` | Non-terminal | Changes addressed |\n\
+                        | `SEGMENT_N_DONE` | Non-terminal | Segment N complete |\n\n\
+                        The agent wrote an unrecognized status. Nexus should interpret the raw status\n\
+                        intent and re-map it to the closest valid status above, then re-assign the worker.",
+                        status.status, normalized
+                    );
+                    let _ = tokio::fs::write(&unrecognized_path, &remap_content).await;
+
+                    warn!(
+                        status = %status.status,
+                        "Unrecognized STATUS.json status — treating as blocked (STATUS_UNRECOGNIZED.md written for Nexus fallback)"
+                    );
+                    PairOutcome::Blocked {
+                        reason: format!(
+                            "Unrecognized STATUS.json status: {} (normalized: {})",
+                            status.status, normalized
+                        ),
+                        blockers: vec![],
+                    }
                 }
             }
         }))
@@ -1173,6 +1718,106 @@ impl ForgeSentinelPair {
         }
 
         false
+    }
+
+    async fn write_synthetic_plan_rejection(&self) -> Result<()> {
+        let path = self.config.shared.join("CONTRACT.md");
+        if path.exists() {
+            return Ok(());
+        }
+        let content = format!(
+            "# Contract\n\n\
+             ## Status: ISSUES\n\n\
+             ## Feedback\n\n\
+             SENTINEL plan review failed after {} attempts.\n\
+             FORGE must re-verify the plan against the project requirements.\n\
+             Review PLAN.md for completeness and update it before continuing.\n",
+            MAX_SENTINEL_RETRIES
+        );
+        tokio::fs::write(&path, &content)
+            .await
+            .context("Failed to write synthetic CONTRACT.md")?;
+        info!(path = %path.display(), "Wrote synthetic CONTRACT.md with ISSUES verdict");
+        Ok(())
+    }
+
+    async fn write_synthetic_segment_rejection(&self, segment: u32) -> Result<()> {
+        let path = self
+            .config
+            .shared
+            .join(format!("segment-{}-eval.md", segment));
+        if path.exists() {
+            return Ok(());
+        }
+        let content = format!(
+            "# Segment {} Evaluation\n\n\
+             ## Verdict: CHANGES_REQUESTED\n\n\
+             ## Specific feedback\n\n\
+             SENTINEL evaluation failed after {} attempts.\n\
+             FORGE must re-verify this segment's implementation locally before resubmitting.\n\
+             Run all tests and lint checks for this segment's code before updating WORKLOG.md.\n\
+             Check .github/workflows/ for CI commands and run them locally to confirm everything passes.\n",
+            segment, MAX_SENTINEL_RETRIES
+        );
+        tokio::fs::write(&path, &content)
+            .await
+            .context("Failed to write synthetic segment eval")?;
+        info!(path = %path.display(), "Wrote synthetic segment-{}-eval.md with CHANGES_REQUESTED", segment);
+        Ok(())
+    }
+
+    async fn write_synthetic_final_rejection(&self) -> Result<()> {
+        let path = self.config.shared.join("final-review.md");
+        if path.exists() {
+            return Ok(());
+        }
+        let content = format!(
+            "# Final Review\n\n\
+             ## Verdict: REJECTED\n\n\
+             ## Specific feedback\n\n\
+             SENTINEL final review failed after {} attempts.\n\
+             FORGE must re-verify all segments locally before requesting final review again.\n\
+             Run the full test suite and all CI checks locally (see .github/workflows/) before proceeding.\n",
+            MAX_SENTINEL_RETRIES
+        );
+        tokio::fs::write(&path, &content)
+            .await
+            .context("Failed to write synthetic final-review.md")?;
+        info!(path = %path.display(), "Wrote synthetic final-review.md with REJECTED verdict");
+        Ok(())
+    }
+
+    async fn append_sentinel_failure_to_handoff(&mut self) -> Result<()> {
+        let handoff_path = self.config.shared.join("HANDOFF.md");
+        if !handoff_path.exists() {
+            return Ok(());
+        }
+        let Some(ref failure) = self.last_sentinel_failure else {
+            return Ok(());
+        };
+        let mode_str = match &failure.mode {
+            SentinelMode::PlanReview => "PlanReview".to_string(),
+            SentinelMode::SegmentEval(n) => format!("SegmentEval({})", n),
+            SentinelMode::FinalReview => "FinalReview".to_string(),
+        };
+        let section = format!(
+            "\n\n## Last Sentinel Failure\n\n\
+             Mode: {}\n\
+             Reason: {}\n",
+            mode_str, failure.reason,
+        );
+        let existing = tokio::fs::read_to_string(&handoff_path)
+            .await
+            .unwrap_or_default();
+        if existing.contains("## Last Sentinel Failure") {
+            return Ok(());
+        }
+        tokio::fs::write(&handoff_path, format!("{}{}", existing, section))
+            .await
+            .context("Failed to append sentinel failure to HANDOFF.md")?;
+        info!("Appended sentinel failure diagnostics to HANDOFF.md");
+        self.last_sentinel_failure = None;
+        Ok(())
     }
 
     async fn materialize_sentinel_artifact(&self, mode: &SentinelMode) -> Result<()> {
@@ -1222,6 +1867,42 @@ impl ForgeSentinelPair {
         }
 
         Ok(())
+    }
+
+    async fn read_sentinel_stderr_excerpt(&self, mode: &SentinelMode) -> Option<String> {
+        let mode_str = match mode {
+            SentinelMode::PlanReview => "PlanReview".to_string(),
+            SentinelMode::SegmentEval(n) => format!("SegmentEval({})", n),
+            SentinelMode::FinalReview => "FinalReview".to_string(),
+        };
+        let log_path = self
+            .config
+            .shared
+            .join("logs")
+            .join(format!("sentinel-{}-stderr.log", mode_str));
+
+        if !log_path.exists() {
+            return None;
+        }
+
+        let content = match tokio::fs::read_to_string(&log_path).await {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        if content.trim().is_empty() {
+            return None;
+        }
+
+        const MAX_EXCERPT_LEN: usize = 500;
+        if content.len() <= MAX_EXCERPT_LEN {
+            Some(content.trim().to_string())
+        } else {
+            Some(format!(
+                "...{}",
+                &content[content.len() - MAX_EXCERPT_LEN..].trim()
+            ))
+        }
     }
 
     async fn read_sentinel_result_payload(&self, mode: &SentinelMode) -> Result<Option<String>> {
@@ -1279,6 +1960,96 @@ impl ForgeSentinelPair {
         Some(inner.trim().to_string())
     }
 
+    fn implementation_segments_from_plan(content: &str) -> Vec<u32> {
+        let mut segments = Vec::new();
+        let mut current_segment: Option<u32> = None;
+        let mut current_has_files = false;
+        let mut current_has_commands = false;
+
+        let finish_segment =
+            |segment: Option<u32>, has_files: bool, has_commands: bool, out: &mut Vec<u32>| {
+                if let Some(n) = segment {
+                    // Command-only verification steps should not block final review.
+                    if !has_commands || has_files {
+                        out.push(n);
+                    }
+                }
+            };
+
+        for line in content.lines() {
+            if line.starts_with("## Segment") || line.starts_with("### Segment") {
+                finish_segment(
+                    current_segment.take(),
+                    current_has_files,
+                    current_has_commands,
+                    &mut segments,
+                );
+
+                current_segment = line
+                    .split_whitespace()
+                    .nth(2)
+                    .and_then(|s| s.trim_end_matches(':').parse::<u32>().ok());
+                current_has_files = false;
+                current_has_commands = false;
+                continue;
+            }
+
+            let trimmed = line.trim();
+            if trimmed.starts_with("**Files**") || trimmed.starts_with("**File**") {
+                current_has_files = true;
+            }
+            if trimmed.starts_with("**Commands**") || trimmed.starts_with("**Command**") {
+                current_has_commands = true;
+            }
+        }
+
+        finish_segment(
+            current_segment,
+            current_has_files,
+            current_has_commands,
+            &mut segments,
+        );
+
+        segments
+    }
+
+    async fn archive_non_terminal_status(&self, status: &str) -> Result<()> {
+        let path = self.config.shared.join("STATUS.json");
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let status_slug: String = status
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default();
+        let archived_path = self
+            .config
+            .shared
+            .join(format!("STATUS.{}.{}.json", status_slug, nonce));
+
+        tokio::fs::rename(&path, &archived_path)
+            .await
+            .with_context(|| format!("Failed to archive non-terminal STATUS.json ({status})"))?;
+
+        debug!(
+            status,
+            archived_to = %archived_path.display(),
+            "Archived non-terminal STATUS.json so the event loop can continue"
+        );
+        Ok(())
+    }
+
     /// Cleanup after pair completion.
     async fn cleanup(&self, _forge: &Child) -> Result<()> {
         self.locks.release_all_for_pair(&self.config.pair_id)?;
@@ -1287,6 +2058,12 @@ impl ForgeSentinelPair {
         if conflict_path.exists() {
             let _ = tokio::fs::remove_file(&conflict_path).await;
             debug!("Removed CONFLICT_RESOLUTION.md after pair completion");
+        }
+
+        let ci_fix_path = self.config.shared.join("CI_FIX.md");
+        if ci_fix_path.exists() {
+            let _ = tokio::fs::remove_file(&ci_fix_path).await;
+            debug!("Removed CI_FIX.md after pair completion");
         }
 
         info!(pair = %self.config.pair_id, "Cleanup complete");
@@ -1301,11 +2078,18 @@ mod tests {
 
     #[test]
     fn test_pair_config_creation() {
-        let config = PairConfig::new("pair-1", std::path::Path::new("/project"), "ghp_test");
+        let config = PairConfig::new(
+            "pair-1",
+            "T-1",
+            std::path::Path::new("/project"),
+            "ghp_test",
+        );
 
         assert_eq!(config.pair_id, "pair-1");
         assert!(config.worktree.starts_with("/project/worktrees/"));
-        assert!(config.shared.ends_with("orchestration/pairs/pair-1/shared"));
+        assert!(config
+            .shared
+            .ends_with("orchestration/pairs/pair-1/T-1/shared"));
         assert!(config.redis_url.is_none());
     }
 
@@ -1313,6 +2097,7 @@ mod tests {
     fn test_pair_config_with_redis() {
         let config = PairConfig::with_redis(
             "pair-1",
+            "T-1",
             std::path::Path::new("/project"),
             "redis://localhost",
             "ghp_test",
@@ -1330,10 +2115,34 @@ mod tests {
         assert_eq!(extracted, "status: AGREED\nsummary: ok");
     }
 
+    #[test]
+    fn test_implementation_segments_ignore_verification_only_segments() {
+        let plan = "\
+## Segments
+
+### Segment 1: Update store
+**Files**: `frontend/src/store.ts`
+
+### Segment 2: Add tests
+**Files**: `frontend/tests/store.test.ts`
+
+### Segment 3: Verify all checks pass
+**Commands**:
+1. `npm run typecheck`
+2. `npm run lint`
+3. `npm test`
+";
+
+        assert_eq!(
+            ForgeSentinelPair::implementation_segments_from_plan(plan),
+            vec![1, 2]
+        );
+    }
+
     #[tokio::test]
     async fn test_read_sentinel_result_payload_from_stdout_log() {
         let dir = tempdir().unwrap();
-        let config = PairConfig::new("pair-1", dir.path(), "ghp_test");
+        let config = PairConfig::new("pair-1", "T-1", dir.path(), "ghp_test");
         let pair = ForgeSentinelPair::new(config.clone());
 
         let logs_dir = config.shared.join("logs");
@@ -1351,6 +2160,177 @@ mod tests {
             .unwrap();
 
         assert_eq!(payload, "status: AGREED\nsummary: ok");
+    }
+
+    #[tokio::test]
+    async fn test_read_status_archives_approved_ready_as_non_terminal() {
+        let dir = tempdir().unwrap();
+        let config = PairConfig::new("pair-1", "T-1", dir.path(), "ghp_test");
+        std::fs::create_dir_all(&config.shared).unwrap();
+        std::fs::write(
+            config.shared.join("STATUS.json"),
+            r#"{"status":"APPROVED_READY","task_id":"T-1"}"#,
+        )
+        .unwrap();
+
+        let pair = ForgeSentinelPair::new(config.clone());
+        let outcome = pair.read_status().await.unwrap();
+
+        assert!(outcome.is_none());
+        assert!(!config.shared.join("STATUS.json").exists());
+
+        let archived = std::fs::read_dir(&config.shared)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("STATUS.approved_ready.")
+            });
+        assert!(archived);
+    }
+
+    #[tokio::test]
+    async fn test_read_status_unknown_status_blocks_instead_of_fuel_exhausted() {
+        let dir = tempdir().unwrap();
+        let config = PairConfig::new("pair-1", "T-1", dir.path(), "ghp_test");
+        std::fs::create_dir_all(&config.shared).unwrap();
+        std::fs::write(
+            config.shared.join("STATUS.json"),
+            r#"{"status":"MYSTERY_STATUS","task_id":"T-1"}"#,
+        )
+        .unwrap();
+
+        let pair = ForgeSentinelPair::new(config);
+        let outcome = pair.read_status().await.unwrap().unwrap();
+
+        assert!(matches!(
+            outcome,
+            PairOutcome::Blocked { ref reason, .. } if reason.contains("MYSTERY_STATUS")
+        ));
+    }
+
+    #[test]
+    fn test_normalize_status_done_variants() {
+        assert_eq!(normalize_status("DONE"), "COMPLETE");
+        assert_eq!(normalize_status("done"), "COMPLETE");
+        assert_eq!(normalize_status("Finished"), "COMPLETE");
+        assert_eq!(normalize_status("SUCCESS"), "COMPLETE");
+        assert_eq!(normalize_status("READY"), "COMPLETE");
+        assert_eq!(normalize_status("WORK_COMPLETE"), "COMPLETE");
+        assert_eq!(normalize_status("IMPLEMENTED"), "COMPLETE");
+        assert_eq!(normalize_status("TASK_COMPLETE"), "COMPLETE");
+    }
+
+    #[test]
+    fn test_normalize_status_pr_variants() {
+        assert_eq!(normalize_status("PR_CREATED"), "PR_OPENED");
+        assert_eq!(normalize_status("PR_SUBMITTED"), "PR_OPENED");
+        assert_eq!(normalize_status("PR_OPEN"), "PR_OPENED");
+    }
+
+    #[test]
+    fn test_normalize_status_blocked_variants() {
+        assert_eq!(normalize_status("FAILED"), "BLOCKED");
+        assert_eq!(normalize_status("ERROR"), "BLOCKED");
+        assert_eq!(normalize_status("STUCK"), "BLOCKED");
+        assert_eq!(normalize_status("ABORTED"), "BLOCKED");
+    }
+
+    #[test]
+    fn test_normalize_status_pending_variants() {
+        assert_eq!(normalize_status("PAUSED"), "PENDING_REVIEW");
+        assert_eq!(normalize_status("NEEDS_REVIEW"), "PENDING_REVIEW");
+        assert_eq!(normalize_status("AWAITING_REVIEW"), "PENDING_REVIEW");
+        assert_eq!(normalize_status("PARTIAL"), "PENDING_REVIEW");
+    }
+
+    #[test]
+    fn test_normalize_status_segment_variants() {
+        assert_eq!(normalize_status("SEGMENT_1_DONE"), "SEGMENT_1_DONE");
+        assert_eq!(normalize_status("segment_2_complete"), "SEGMENT_2_COMPLETE");
+        assert_eq!(normalize_status("Segment_3_Finished"), "SEGMENT_3_FINISHED");
+    }
+
+    #[test]
+    fn test_normalize_status_canonical_passthrough() {
+        assert_eq!(normalize_status("PR_OPENED"), "PR_OPENED");
+        assert_eq!(normalize_status("COMPLETE"), "COMPLETE");
+        assert_eq!(normalize_status("BLOCKED"), "BLOCKED");
+        assert_eq!(normalize_status("FUEL_EXHAUSTED"), "FUEL_EXHAUSTED");
+    }
+
+    #[test]
+    fn test_normalize_status_truly_unknown() {
+        assert_eq!(normalize_status("MYSTERY_STATUS"), "MYSTERY_STATUS");
+        assert_eq!(normalize_status("GIBBERISH"), "GIBBERISH");
+    }
+
+    #[test]
+    fn test_normalize_status_keyword_fuzzy_matching() {
+        assert_eq!(normalize_status("AWAITING_REVIEW"), "PENDING_REVIEW");
+        assert_eq!(normalize_status("REVIEW_PENDING"), "PENDING_REVIEW");
+        assert_eq!(normalize_status("WAITING_FOR_APPROVAL"), "PENDING_REVIEW");
+        assert_eq!(normalize_status("ON_HOLD"), "PENDING_REVIEW");
+        assert_eq!(
+            normalize_status("IMPLEMENTATION_COMPLETE"),
+            "IMPLEMENTATION_COMPLETE"
+        ); // canonical passthrough
+        assert_eq!(normalize_status("WORK_FINISHED"), "COMPLETE");
+        assert_eq!(normalize_status("BUILD_FAILED"), "BLOCKED");
+        assert_eq!(normalize_status("PR_OPEN_PENDING"), "PR_OPENED");
+        assert_eq!(normalize_status("BUDGET_EXCEEDED"), "FUEL_EXHAUSTED");
+        assert_eq!(
+            normalize_status("SENTINEL_REVIEW_NEEDED"),
+            "AWAITING_SENTINEL_REVIEW"
+        );
+        assert_eq!(
+            normalize_status("SEGMENT_IN_PROGRESS"),
+            "SEGMENT_IN_PROGRESS"
+        );
+        assert_eq!(normalize_status("CODE_REVIEW_COMPLETE"), "COMPLETE"); // "COMPLETE" overrides "REVIEW"
+        assert_eq!(normalize_status("TASK_SUCCESSFUL"), "COMPLETE");
+    }
+
+    #[tokio::test]
+    async fn test_read_status_done_with_pr_maps_to_pr_opened() {
+        let dir = tempdir().unwrap();
+        let config = PairConfig::new("pair-1", "T-1", dir.path(), "ghp_test");
+        std::fs::create_dir_all(&config.shared).unwrap();
+        std::fs::write(
+            config.shared.join("STATUS.json"),
+            r#"{"status":"DONE","task_id":"T-1","pr_url":"https://github.com/o/r/pull/5","pr_number":5}"#,
+        )
+        .unwrap();
+
+        let pair = ForgeSentinelPair::new(config);
+        let outcome = pair.read_status().await.unwrap().unwrap();
+
+        assert!(matches!(
+            outcome,
+            PairOutcome::PrOpened { pr_number: 5, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_read_status_done_without_pr_maps_to_blocked() {
+        let dir = tempdir().unwrap();
+        let config = PairConfig::new("pair-1", "T-1", dir.path(), "ghp_test");
+        std::fs::create_dir_all(&config.shared).unwrap();
+        std::fs::write(
+            config.shared.join("STATUS.json"),
+            r#"{"status":"DONE","task_id":"T-1"}"#,
+        )
+        .unwrap();
+
+        let pair = ForgeSentinelPair::new(config);
+        let outcome = pair.read_status().await.unwrap().unwrap();
+
+        assert!(matches!(
+            outcome,
+            PairOutcome::Blocked { ref reason, .. } if reason.contains("PR not created")
+        ));
     }
 
     #[test]
@@ -1425,7 +2405,7 @@ timeout_profile:
     #[test]
     fn test_resolve_sentinel_timeout_with_profile() {
         let dir = tempdir().unwrap();
-        let config = PairConfig::new("pair-1", dir.path(), "ghp_test");
+        let config = PairConfig::new("pair-1", "T-1", dir.path(), "ghp_test");
         let mut pair = ForgeSentinelPair::new(config);
         pair.contract_timeout = Some(TimeoutProfile {
             plan_review_secs: 180,
@@ -1446,7 +2426,7 @@ timeout_profile:
     #[test]
     fn test_resolve_sentinel_timeout_fallback() {
         let dir = tempdir().unwrap();
-        let config = PairConfig::new("pair-1", dir.path(), "ghp_test");
+        let config = PairConfig::new("pair-1", "T-1", dir.path(), "ghp_test");
         let pair = ForgeSentinelPair::new(config);
 
         let timeout = pair.resolve_sentinel_timeout(&SentinelMode::PlanReview);
