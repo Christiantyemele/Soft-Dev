@@ -73,7 +73,10 @@ async fn main() -> Result<()> {
     let nexus = Arc::new(NexusNode::new(persona_path, registry_path));
     let forge_pair = Arc::new(ForgePairNode::new(&workspace_dir, &github_token));
     let vessel = Arc::new(VesselNode::from_env());
-    let lore = Arc::new(LoreNode::new(&workspace_dir, orchestrator_dir.join("orchestration/agent/agents/lore.agent.md")));
+    let lore = Arc::new(LoreNode::new(
+        &workspace_dir,
+        orchestrator_dir.join("orchestration/agent/agents/lore.agent.md"),
+    ));
 
     // 4. Setup Flow with Routing
     // The ForgePairNode handles the full FORGE-SENTINEL lifecycle:
@@ -127,10 +130,7 @@ async fn main() -> Result<()> {
         .add_node(
             "lore",
             lore,
-            vec![
-                (ACTION_DOCS_COMPLETE, "nexus"),
-                (ACTION_NO_WORK, "nexus"),
-            ],
+            vec![(ACTION_DOCS_COMPLETE, "nexus"), (ACTION_NO_WORK, "nexus")],
         );
 
     // 5. Initialize Shared Store

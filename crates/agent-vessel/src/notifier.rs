@@ -158,7 +158,15 @@ mod tests {
     async fn test_emit_ticket_merged() {
         let store = SharedStore::new_in_memory();
 
-        VesselNotifier::emit_ticket_merged(&store, "T-42", 123, "abc123", "Fix login bug", Some("Fixed the login issue")).await;
+        VesselNotifier::emit_ticket_merged(
+            &store,
+            "T-42",
+            123,
+            "abc123",
+            "Fix login bug",
+            Some("Fixed the login issue"),
+        )
+        .await;
 
         let events = store.get_events_since(0).await;
         assert_eq!(events.len(), 1);

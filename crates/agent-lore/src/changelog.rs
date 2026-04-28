@@ -31,8 +31,7 @@ impl ChangelogManager {
         tokio::fs::write(&self.changelog_path, &updated).await?;
         info!(
             category = category.as_str(),
-            pr_number,
-            "Changelog entry added"
+            pr_number, "Changelog entry added"
         );
 
         Ok(())
@@ -137,17 +136,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
                 let insert_pos = result.find("# Changelog\n\n").map(|p| p + 13).unwrap_or(0);
                 result.insert_str(insert_pos, &unreleased_section);
             } else {
-                let section = format!(
-                    "### {}\n{}\n",
-                    category.as_str(),
-                    entry_line
-                );
-                let unreleased_end = result.find("## [Unreleased]").and_then(|p| {
-                    result[p..].find("\n\n## ")
-                        .map(|offset| p + offset)
-                        .or(Some(result.len()))
-                }).unwrap_or(result.len());
-                
+                let section = format!("### {}\n{}\n", category.as_str(), entry_line);
+                let unreleased_end = result
+                    .find("## [Unreleased]")
+                    .and_then(|p| {
+                        result[p..]
+                            .find("\n\n## ")
+                            .map(|offset| p + offset)
+                            .or(Some(result.len()))
+                    })
+                    .unwrap_or(result.len());
+
                 result.insert_str(unreleased_end, &section);
             }
         }
@@ -176,7 +175,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
             if lower.contains("breaking change") || lower.contains("## breaking") {
                 category = ChangeCategory::Changed;
             }
-            if lower.contains("security") || lower.contains("vulnerability") || lower.contains("cve-") {
+            if lower.contains("security")
+                || lower.contains("vulnerability")
+                || lower.contains("cve-")
+            {
                 category = ChangeCategory::Security;
             }
         }

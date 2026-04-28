@@ -153,10 +153,7 @@ async fn main() -> Result<()> {
         .add_node(
             "lore",
             lore,
-            vec![
-                (ACTION_DOCS_COMPLETE, "nexus"),
-                (ACTION_NO_WORK, "nexus"),
-            ],
+            vec![(ACTION_DOCS_COMPLETE, "nexus"), (ACTION_NO_WORK, "nexus")],
         )
         .max_steps(20);
 

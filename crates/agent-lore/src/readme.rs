@@ -23,7 +23,11 @@ impl ReadmeManager {
         }
     }
 
-    pub async fn update_feature_section(&self, feature_name: &str, description: &str) -> Result<bool> {
+    pub async fn update_feature_section(
+        &self,
+        feature_name: &str,
+        description: &str,
+    ) -> Result<bool> {
         let content = self.read_current().await?;
 
         let Some(mut content) = content else {
@@ -35,7 +39,10 @@ impl ReadmeManager {
         let feature_line = format!("- **{}**: {}", feature_name, description);
 
         if content.contains(&feature_line) {
-            info!(feature = feature_name, "Feature already documented in README");
+            info!(
+                feature = feature_name,
+                "Feature already documented in README"
+            );
             return Ok(false);
         }
 
@@ -54,7 +61,9 @@ impl ReadmeManager {
                     .lines()
                     .rfind(|l| !l.trim().is_empty())
                     .and_then(|l| {
-                        content[section_start..].find(l).map(|p| section_start + p + l.len())
+                        content[section_start..]
+                            .find(l)
+                            .map(|p| section_start + p + l.len())
                     })
                     .unwrap_or(section_start);
                 last_line_in_section
@@ -99,7 +108,10 @@ impl ReadmeManager {
                 .unwrap_or(content.len());
 
             let new_section = format!("\n\n{}", instructions);
-            content.replace_range(install_pos..next_section, &format!("{}{}", section_header, new_section));
+            content.replace_range(
+                install_pos..next_section,
+                &format!("{}{}", section_header, new_section),
+            );
             tokio::fs::write(&self.readme_path, &content).await?;
             info!("Installation section updated in README");
             return Ok(true);
