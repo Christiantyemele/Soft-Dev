@@ -74,10 +74,7 @@ impl VesselNode {
             return None;
         }
         let pair_id = parts[0];
-        let ticket_id = pr_info
-            .ticket_id
-            .as_deref()
-            .unwrap_or(parts[1]);
+        let ticket_id = pr_info.ticket_id.as_deref().unwrap_or(parts[1]);
         Some(
             PathBuf::from(workspace_root)
                 .join("worktrees")
@@ -210,7 +207,15 @@ impl Node for VesselNode {
                     pr_title,
                     pr_body,
                 } => {
-                    VesselNotifier::emit_ticket_merged(store, ticket_id, *pr_number, sha, pr_title, pr_body.as_deref()).await;
+                    VesselNotifier::emit_ticket_merged(
+                        store,
+                        ticket_id,
+                        *pr_number,
+                        sha,
+                        pr_title,
+                        pr_body.as_deref(),
+                    )
+                    .await;
                     VesselNotifier::set_ticket_status_merged(store, ticket_id).await;
 
                     self.update_ticket_status(store, ticket_id, "merged").await;
@@ -487,7 +492,15 @@ impl Node for VesselNode {
                     let tid = ticket_id
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    VesselNotifier::emit_ticket_merged(store, &tid, *pr_number, "", "Merged without CI validation", None).await;
+                    VesselNotifier::emit_ticket_merged(
+                        store,
+                        &tid,
+                        *pr_number,
+                        "",
+                        "Merged without CI validation",
+                        None,
+                    )
+                    .await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
 
                     self.update_ticket_status(store, &tid, "merged_no_ci").await;
@@ -950,10 +963,7 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        let ticket_id = pr_info
-            .ticket_id
-            .as_deref()
-            .unwrap_or(parts[1]);
+        let ticket_id = pr_info.ticket_id.as_deref().unwrap_or(parts[1]);
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")
@@ -1079,12 +1089,7 @@ impl VesselNode {
         store.set(KEY_TICKETS, json!(tickets)).await;
     }
 
-    async fn mark_ticket_awaiting_human(
-        &self,
-        store: &SharedStore,
-        ticket_id: &str,
-        reason: &str,
-    ) {
+    async fn mark_ticket_awaiting_human(&self, store: &SharedStore, ticket_id: &str, reason: &str) {
         let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
 
         for ticket in tickets.iter_mut() {
@@ -1430,8 +1435,15 @@ impl VesselNode {
                     let tid = ticket_id
                         .or(info.ticket_id.clone())
                         .unwrap_or_else(|| format!("T-{}", pr_number));
-                    VesselNotifier::emit_ticket_merged(store, &tid, pr_number, &info.head_sha, &info.title, None)
-                        .await;
+                    VesselNotifier::emit_ticket_merged(
+                        store,
+                        &tid,
+                        pr_number,
+                        &info.head_sha,
+                        &info.title,
+                        None,
+                    )
+                    .await;
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
                     self.remove_from_pending_prs(store, pr_number).await;
                 }

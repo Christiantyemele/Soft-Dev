@@ -232,7 +232,9 @@ fn classify_error(message: &str) -> String {
     let lower = message.to_lowercase();
     if lower.contains("unmerged") || lower.contains("conflict") {
         "merge_conflict".to_string()
-    } else if lower.contains("compilation") || lower.contains("error ts") || lower.contains("cargo ")
+    } else if lower.contains("compilation")
+        || lower.contains("error ts")
+        || lower.contains("cargo ")
     {
         "compilation_error".to_string()
     } else if lower.contains("test") && (lower.contains("fail") || lower.contains("error")) {
@@ -1994,10 +1996,7 @@ impl ForgeSentinelPair {
 
                     self.write_error_feedback(
                         "build_verification",
-                        &format!(
-                            "Verification command `{} failed:\n{}",
-                            command, output
-                        ),
+                        &format!("Verification command `{} failed:\n{}", command, output),
                         Some(&format!(
                             "Run `{} locally, fix ALL errors, then commit and push",
                             command

@@ -136,29 +136,38 @@ impl LoreNode {
                         .unwrap_or_else(|| format!("Ticket {}", ticket_id));
                     let pr_body = event.payload["pr_body"].as_str().map(String::from);
 
-                    let needs_adr = !self
-                        .adr_generator
-                        .adr_exists_for_ticket(ticket_id)
-                        .await;
+                    let needs_adr = !self.adr_generator.adr_exists_for_ticket(ticket_id).await;
 
                     if needs_adr {
                         let adr_title = pr_title
                             .strip_prefix(&format!("[{}] ", ticket_id))
                             .unwrap_or(&pr_title);
-                        
+
                         let context = if let Some(ref b) = pr_body {
-                            let lines: Vec<&str> = b.lines()
+                            let lines: Vec<&str> = b
+                                .lines()
                                 .map(|l| l.trim())
-                                .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("---"))
+                                .filter(|l| {
+                                    !l.is_empty() && !l.starts_with('#') && !l.starts_with("---")
+                                })
                                 .take(5)
                                 .collect();
                             lines.join("\n")
                         } else {
-                            format!("Changes merged in PR #{} for ticket {}.", pr_number, ticket_id)
+                            format!(
+                                "Changes merged in PR #{} for ticket {}.",
+                                pr_number, ticket_id
+                            )
                         };
 
-                        let decision_summary = format!("Implement changes described in PR #{} for ticket {}.", pr_number, ticket_id);
-                        let consequences = format!("Ticket {} is now resolved and merged into main branch.", ticket_id);
+                        let decision_summary = format!(
+                            "Implement changes described in PR #{} for ticket {}.",
+                            pr_number, ticket_id
+                        );
+                        let consequences = format!(
+                            "Ticket {} is now resolved and merged into main branch.",
+                            ticket_id
+                        );
 
                         tasks.push(LoreTask::AdrGeneration {
                             decision: ArchitecturalDecision::new(
@@ -200,12 +209,15 @@ impl LoreNode {
 
         self.changelog_manager.ensure_changelog_exists().await?;
 
-        let raw_title = pr_title.clone().unwrap_or_else(|| format!("Ticket {}", ticket_id));
+        let raw_title = pr_title
+            .clone()
+            .unwrap_or_else(|| format!("Ticket {}", ticket_id));
         let category = self
             .changelog_manager
             .categorize_from_pr(&raw_title, pr_body.as_deref());
 
-        let entry = self.generate_changelog_entry(&raw_title, pr_body.as_deref(), ticket_id, category);
+        let entry =
+            self.generate_changelog_entry(&raw_title, pr_body.as_deref(), ticket_id, category);
 
         self.changelog_manager
             .add_entry(category, &entry, *pr_number)
@@ -216,29 +228,39 @@ impl LoreNode {
         })
     }
 
-    fn generate_changelog_entry(&self, title: &str, body: Option<&str>, ticket_id: &str, category: ChangeCategory) -> String {
+    fn generate_changelog_entry(
+        &self,
+        title: &str,
+        body: Option<&str>,
+        ticket_id: &str,
+        category: ChangeCategory,
+    ) -> String {
         let clean_title = title
             .strip_prefix(&format!("[{}] ", ticket_id))
             .unwrap_or(title)
             .trim();
 
         if let Some(b) = body {
-            let lines: Vec<&str> = b.lines()
+            let lines: Vec<&str> = b
+                .lines()
                 .map(|l| l.trim())
                 .filter(|l| {
-                    !l.is_empty() 
-                    && !l.starts_with('#') 
-                    && !l.starts_with("---")
-                    && !l.starts_with("## ")
-                    && !l.starts_with("Resolves #")
+                    !l.is_empty()
+                        && !l.starts_with('#')
+                        && !l.starts_with("---")
+                        && !l.starts_with("## ")
+                        && !l.starts_with("Resolves #")
                 })
                 .collect();
 
             if !lines.is_empty() {
-                let impl_section = lines.iter().position(|l| l.contains("Implementation") || l.contains("Changes") || l.contains("What"));
+                let impl_section = lines.iter().position(|l| {
+                    l.contains("Implementation") || l.contains("Changes") || l.contains("What")
+                });
                 let start = impl_section.map(|p| p + 1).unwrap_or(0);
-                
-                let content_lines: Vec<&&str> = lines[start..].iter()
+
+                let content_lines: Vec<&&str> = lines[start..]
+                    .iter()
                     .filter(|l| !l.starts_with('-') || l.len() > 3)
                     .take(3)
                     .collect();
@@ -290,13 +312,20 @@ impl LoreNode {
     }
 
     #[allow(dead_code)]
-    async fn process_retrospective(&self, task: &LoreTask, store: &SharedStore) -> Result<LoreOutcome> {
+    async fn process_retrospective(
+        &self,
+        task: &LoreTask,
+        store: &SharedStore,
+    ) -> Result<LoreOutcome> {
         let LoreTask::Retrospective { sprint_id } = task else {
             return Ok(LoreOutcome::NoWork);
         };
 
         let tickets = RetrospectiveGenerator::read_sprint_history(store).await;
-        let path = self.retrospective_generator.generate(sprint_id, &tickets, None).await?;
+        let path = self
+            .retrospective_generator
+            .generate(sprint_id, &tickets, None)
+            .await?;
 
         Ok(LoreOutcome::RetrospectiveGenerated {
             path: path.to_string_lossy().to_string(),
@@ -312,7 +341,10 @@ impl LoreNode {
         let docs = self.docs_manager.list_docs(*scope).await?;
 
         Ok(LoreOutcome::DocsSynced {
-            updated: docs.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+            updated: docs
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect(),
         })
     }
 
@@ -370,7 +402,11 @@ impl LoreNode {
                 .output()?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!("Failed to create branch {}: {}", branch_name, stderr));
+                return Err(anyhow!(
+                    "Failed to create branch {}: {}",
+                    branch_name,
+                    stderr
+                ));
             }
             info!("LORE: Created branch {}", branch_name);
         }
@@ -384,7 +420,7 @@ impl LoreNode {
             return Err(anyhow!("Failed to git add: {}", stderr));
         }
 
-        let commit_msg = format!("docs: update documentation for merged PRs");
+        let commit_msg = "docs: update documentation for merged PRs".to_string();
         let output = StdCommand::new("git")
             .args(["commit", "-m", &commit_msg])
             .current_dir(workspace)
@@ -430,19 +466,23 @@ impl LoreNode {
         let owner = parts[0];
         let repo_name = parts[1];
 
-        let mcp_command = std::env::var("MCP_CLI_COMMAND").unwrap_or_else(|_| "mcp-cli".to_string());
+        let mcp_command =
+            std::env::var("MCP_CLI_COMMAND").unwrap_or_else(|_| "mcp-cli".to_string());
         let client = McpGithubClient::new(&mcp_command);
 
         let mut pr_body = String::from("## Documentation Update\n\n");
         pr_body.push_str("This PR contains automated documentation updates generated by LORE.\n\n");
         pr_body.push_str("### Files Changed\n\n");
         for file in changed_files {
-        if let Ok(rel) = file.strip_prefix(&self.config.workspace_root) {
-            pr_body.push_str(&format!("- `{}`\n", rel.display()));
-        }
+            if let Ok(rel) = file.strip_prefix(&self.config.workspace_root) {
+                pr_body.push_str(&format!("- `{}`\n", rel.display()));
+            }
         }
 
-        let title = format!("docs: update documentation ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M"));
+        let title = format!(
+            "docs: update documentation ({})",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M")
+        );
         let pr_number = client
             .create_pull_request(owner, repo_name, &title, branch_name, "main")
             .await?;
@@ -460,7 +500,8 @@ impl LoreNode {
             "is_docs_pr": true,
         });
 
-        let mut pending_prs: Vec<Value> = store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
+        let mut pending_prs: Vec<Value> =
+            store.get_typed(KEY_PENDING_PRS).await.unwrap_or_default();
         pending_prs.push(pr_entry);
         store.set(KEY_PENDING_PRS, json!(pending_prs)).await;
 
@@ -493,8 +534,8 @@ impl Node for LoreNode {
     }
 
     async fn exec(&self, prep_result: Value) -> Result<Value> {
-        let tasks: Vec<LoreTask> = serde_json::from_value(prep_result["tasks"].clone())
-            .unwrap_or_default();
+        let tasks: Vec<LoreTask> =
+            serde_json::from_value(prep_result["tasks"].clone()).unwrap_or_default();
 
         if tasks.is_empty() {
             info!("LORE: No documentation tasks to process");
@@ -575,16 +616,14 @@ impl Node for LoreNode {
             let branch_name = format!("lore/docs-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
 
             match self.commit_and_push_docs(&changed_files).await {
-                Ok(()) => {
-                    match self.open_docs_pr(store, &branch_name, &changed_files).await {
-                        Ok(pr_number) => {
-                            info!(pr_number, "LORE: Documentation PR created successfully");
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "LORE: Failed to create docs PR — changes committed but not opened as PR");
-                        }
+                Ok(()) => match self.open_docs_pr(store, &branch_name, &changed_files).await {
+                    Ok(pr_number) => {
+                        info!(pr_number, "LORE: Documentation PR created successfully");
                     }
-                }
+                    Err(e) => {
+                        warn!(error = %e, "LORE: Failed to create docs PR — changes committed but not opened as PR");
+                    }
+                },
                 Err(e) => {
                     warn!(error = %e, "LORE: Failed to commit/push docs — changes remain local only");
                 }

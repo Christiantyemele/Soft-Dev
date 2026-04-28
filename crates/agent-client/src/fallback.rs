@@ -180,7 +180,8 @@ impl FallbackClient {
         if external_connector {
             info!("External connector configured - skipping direct API fallbacks");
         } else {
-            let skip_anthropic_direct = matches!(mapped_provider.as_deref(), None | Some("anthropic"));
+            let skip_anthropic_direct =
+                matches!(mapped_provider.as_deref(), None | Some("anthropic"));
             if !skip_anthropic_direct {
                 if let Ok(c) = AnthropicClient::from_env_with_model(model) {
                     info!(provider = "anthropic-direct", model = %c.model(), "Direct fallback initialized");

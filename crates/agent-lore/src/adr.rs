@@ -159,9 +159,18 @@ mod tests {
 
     #[test]
     fn test_slugify() {
-        assert_eq!(AdrGenerator::slugify("Add OAuth2 Support"), "add-oauth2-support");
-        assert_eq!(AdrGenerator::slugify("Use PostgreSQL for Storage"), "use-postgresql-for-storage");
-        assert_eq!(AdrGenerator::slugify("Fix: API Rate Limiting"), "fix-api-rate-limiting");
+        assert_eq!(
+            AdrGenerator::slugify("Add OAuth2 Support"),
+            "add-oauth2-support"
+        );
+        assert_eq!(
+            AdrGenerator::slugify("Use PostgreSQL for Storage"),
+            "use-postgresql-for-storage"
+        );
+        assert_eq!(
+            AdrGenerator::slugify("Fix: API Rate Limiting"),
+            "fix-api-rate-limiting"
+        );
     }
 
     #[test]
