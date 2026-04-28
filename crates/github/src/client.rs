@@ -128,7 +128,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires mcp-cli in env
     async fn test_mcp_call_format() {
-        let client = McpGithubClient::new("mcp-cli");
+        let _client = McpGithubClient::new("mcp-cli");
         // This is a dry run of the command construction
         // We'd need a mock for Command if we wanted a pure unit test
     }
