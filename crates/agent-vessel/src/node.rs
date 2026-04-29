@@ -939,7 +939,7 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        
+
         // Use ticket_id from PR info (extracted from title), not from branch name.
         // The branch name may be stale or mismatched with the actual ticket.
         let ticket_id = match &pr_info.ticket_id {
@@ -1064,7 +1064,10 @@ impl VesselNode {
         let issue_number: u64 = match ticket_id.strip_prefix("T-").and_then(|n| n.parse().ok()) {
             Some(n) => n,
             None => {
-                warn!(ticket_id, "Cannot extract GitHub issue number from ticket_id — skipping issue close");
+                warn!(
+                    ticket_id,
+                    "Cannot extract GitHub issue number from ticket_id — skipping issue close"
+                );
                 return;
             }
         };
@@ -1073,13 +1076,18 @@ impl VesselNode {
         let (owner, repo) = parse_repository(repository.as_deref());
 
         if owner.is_empty() || repo.is_empty() {
-            warn!(ticket_id, "Repository info missing — cannot close GitHub issue");
+            warn!(
+                ticket_id,
+                "Repository info missing — cannot close GitHub issue"
+            );
             return;
         }
 
         match self.client.close_issue(owner, repo, issue_number).await {
             Ok(()) => info!(ticket_id, issue_number, "GitHub issue closed after merge"),
-            Err(e) => warn!(ticket_id, issue_number, error = %e, "Failed to close GitHub issue — merge still succeeded"),
+            Err(e) => {
+                warn!(ticket_id, issue_number, error = %e, "Failed to close GitHub issue — merge still succeeded")
+            }
         }
     }
 
@@ -1321,15 +1329,11 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        
+
         // Use ticket_id from PR info (extracted from title), not from branch name.
         // The branch name may be stale or mismatched with the actual ticket.
         // Fall back to branch-derived ticket_id if not available.
-        let ticket_id = pr_placeholder
-            .ticket_id
-            .as_ref()
-            .map(|s| s.as_str())
-            .unwrap_or(parts[1]);
+        let ticket_id = pr_placeholder.ticket_id.as_deref().unwrap_or(parts[1]);
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")

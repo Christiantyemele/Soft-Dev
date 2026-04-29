@@ -599,7 +599,10 @@ impl GithubRestClient {
             info!(issue = issue_number, "GitHub issue closed successfully");
             Ok(())
         } else {
-            warn!(issue = issue_number, state, "GitHub issue close may not have succeeded");
+            warn!(
+                issue = issue_number,
+                state, "GitHub issue close may not have succeeded"
+            );
             Ok(())
         }
     }
