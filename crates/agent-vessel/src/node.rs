@@ -48,6 +48,8 @@ const MAX_CI_FIX_ATTEMPTS: u32 = 3;
 struct CiFixPrInfo {
     pr_number: u64,
     head_branch: String,
+    /// Actual ticket_id from PR title (may differ from branch name).
+    ticket_id: Option<String>,
 }
 
 impl VesselNode {
@@ -74,11 +76,12 @@ impl VesselNode {
             return None;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+        // Worktrees are keyed by pair_id only (not pair_id-ticket_id).
+        // See WorktreeManager::create_worktree which uses `worktrees_dir.join(pair_id)`.
         Some(
             PathBuf::from(workspace_root)
                 .join("worktrees")
-                .join(format!("{}-{}", pair_id, ticket_id)),
+                .join(pair_id),
         )
     }
 }
@@ -208,6 +211,7 @@ impl Node for VesselNode {
                     VesselNotifier::set_ticket_status_merged(store, ticket_id).await;
 
                     self.update_ticket_status(store, ticket_id, "merged").await;
+                    self.close_github_issue(store, ticket_id).await;
                     self.remove_from_pending_prs(store, *pr_number).await;
 
                     if let Some(pr) = pending_prs
@@ -287,6 +291,7 @@ impl Node for VesselNode {
                             &CiFixPrInfo {
                                 pr_number: *pr_number,
                                 head_branch: head_branch.clone(),
+                                ticket_id: ticket_id.clone(),
                             },
                             reason,
                             failure_detail.as_ref(),
@@ -426,6 +431,7 @@ impl Node for VesselNode {
                             &CiFixPrInfo {
                                 pr_number: *pr_number,
                                 head_branch: head_branch.clone(),
+                                ticket_id: ticket_id.clone(),
                             },
                             "CI timed out — possible stuck or flaky CI run",
                             None,
@@ -485,6 +491,7 @@ impl Node for VesselNode {
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
 
                     self.update_ticket_status(store, &tid, "merged_no_ci").await;
+                    self.close_github_issue(store, &tid).await;
                     self.remove_from_pending_prs(store, *pr_number).await;
 
                     if let Some(pr) = pending_prs
@@ -921,6 +928,7 @@ impl VesselNode {
             }
         };
 
+        // Extract pair_id from branch name (e.g., "forge-1/T-005" -> "forge-1")
         let branch = &pr_info.head_branch;
         let parts: Vec<&str> = branch.splitn(2, '/').collect();
         if parts.len() != 2 {
@@ -931,13 +939,25 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+
+        // Use ticket_id from PR info (extracted from title), not from branch name.
+        // The branch name may be stale or mismatched with the actual ticket.
+        let ticket_id = match &pr_info.ticket_id {
+            Some(tid) => tid.clone(),
+            None => {
+                warn!(
+                    branch,
+                    "No ticket_id in PR info — skipping CONFLICT_RESOLUTION.md"
+                );
+                return false;
+            }
+        };
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")
             .join("pairs")
             .join(pair_id)
-            .join(ticket_id)
+            .join(&ticket_id)
             .join("shared");
 
         // Ensure the shared directory exists before writing CONFLICT_RESOLUTION.md.
@@ -1036,6 +1056,39 @@ impl VesselNode {
         }
 
         store.set(KEY_TICKETS, json!(tickets)).await;
+    }
+
+    /// Close the corresponding GitHub issue after a successful merge.
+    /// Extracts the issue number from the ticket_id format `T-{issue_number:03}`.
+    async fn close_github_issue(&self, store: &SharedStore, ticket_id: &str) {
+        let issue_number: u64 = match ticket_id.strip_prefix("T-").and_then(|n| n.parse().ok()) {
+            Some(n) => n,
+            None => {
+                warn!(
+                    ticket_id,
+                    "Cannot extract GitHub issue number from ticket_id — skipping issue close"
+                );
+                return;
+            }
+        };
+
+        let repository: Option<String> = store.get_typed("repository").await;
+        let (owner, repo) = parse_repository(repository.as_deref());
+
+        if owner.is_empty() || repo.is_empty() {
+            warn!(
+                ticket_id,
+                "Repository info missing — cannot close GitHub issue"
+            );
+            return;
+        }
+
+        match self.client.close_issue(owner, repo, issue_number).await {
+            Ok(()) => info!(ticket_id, issue_number, "GitHub issue closed after merge"),
+            Err(e) => {
+                warn!(ticket_id, issue_number, error = %e, "Failed to close GitHub issue — merge still succeeded")
+            }
+        }
     }
 
     async fn mark_ticket_failed(&self, store: &SharedStore, ticket_id: &str, reason: &str) {
@@ -1265,6 +1318,7 @@ impl VesselNode {
             }
         };
 
+        // Extract pair_id from branch name (e.g., "forge-1/T-005" -> "forge-1")
         let branch = &pr_placeholder.head_branch;
         let parts: Vec<&str> = branch.splitn(2, '/').collect();
         if parts.len() != 2 {
@@ -1275,7 +1329,11 @@ impl VesselNode {
             return false;
         }
         let pair_id = parts[0];
-        let ticket_id = parts[1];
+
+        // Use ticket_id from PR info (extracted from title), not from branch name.
+        // The branch name may be stale or mismatched with the actual ticket.
+        // Fall back to branch-derived ticket_id if not available.
+        let ticket_id = pr_placeholder.ticket_id.as_deref().unwrap_or(parts[1]);
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")

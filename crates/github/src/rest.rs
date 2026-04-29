@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
@@ -53,6 +53,16 @@ impl GithubRestClient {
     fn build_put(&self, url: &str, body: &[u8]) -> reqwest::RequestBuilder {
         self.client
             .put(url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Content-Type", "application/json")
+            .body(body.to_vec())
+    }
+
+    fn build_patch(&self, url: &str, body: &[u8]) -> reqwest::RequestBuilder {
+        self.client
+            .patch(url)
             .header("Authorization", self.auth_header())
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
@@ -170,6 +180,28 @@ impl GithubRestClient {
         let payload = serde_json::to_vec(body)?;
         let resp = self
             .send_with_retry(|| self.build_put(url, &payload))
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub API error {}: {}", status, body);
+        }
+
+        resp.json::<T>()
+            .await
+            .context("Failed to parse GitHub response")
+    }
+
+    async fn patch_json<T: for<'de> Deserialize<'de>, B: Serialize>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T> {
+        debug!(url, "GitHub API PATCH");
+        let payload = serde_json::to_vec(body)?;
+        let resp = self
+            .send_with_retry(|| self.build_patch(url, &payload))
             .await?;
 
         let status = resp.status();
@@ -552,6 +584,27 @@ impl GithubRestClient {
             GITHUB_API_BASE, owner, repo
         );
         self.get_json(&url).await
+    }
+
+    /// Close a GitHub issue by setting its state to "closed".
+    pub async fn close_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            GITHUB_API_BASE, owner, repo, issue_number
+        );
+        let body = serde_json::json!({ "state": "closed" });
+        let resp: serde_json::Value = self.patch_json(&url, &body).await?;
+        let state = resp["state"].as_str().unwrap_or("open");
+        if state == "closed" {
+            info!(issue = issue_number, "GitHub issue closed successfully");
+            Ok(())
+        } else {
+            warn!(
+                issue = issue_number,
+                state, "GitHub issue close may not have succeeded"
+            );
+            Ok(())
+        }
     }
 
     /// Update a PR branch with the latest changes from the base branch.

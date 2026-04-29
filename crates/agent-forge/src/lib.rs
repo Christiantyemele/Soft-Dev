@@ -659,10 +659,7 @@ impl ForgePairNode {
         use anyhow::Context as _;
         use std::process::Command as StdCommand;
 
-        let worktree_path = self
-            .workspace_root
-            .join("worktrees")
-            .join(format!("{}-{}", worker_id, ticket_id));
+        let worktree_path = self.workspace_root.join("worktrees").join(worker_id);
         let branch_name = WorktreeManager::branch_name(worker_id, ticket_id);
 
         if !worktree_path.exists() {
