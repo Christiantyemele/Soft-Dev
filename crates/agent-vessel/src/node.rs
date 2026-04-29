@@ -211,6 +211,7 @@ impl Node for VesselNode {
                     VesselNotifier::set_ticket_status_merged(store, ticket_id).await;
 
                     self.update_ticket_status(store, ticket_id, "merged").await;
+                    self.close_github_issue(store, ticket_id).await;
                     self.remove_from_pending_prs(store, *pr_number).await;
 
                     if let Some(pr) = pending_prs
@@ -490,6 +491,7 @@ impl Node for VesselNode {
                     VesselNotifier::set_ticket_status_merged(store, &tid).await;
 
                     self.update_ticket_status(store, &tid, "merged_no_ci").await;
+                    self.close_github_issue(store, &tid).await;
                     self.remove_from_pending_prs(store, *pr_number).await;
 
                     if let Some(pr) = pending_prs
@@ -1054,6 +1056,31 @@ impl VesselNode {
         }
 
         store.set(KEY_TICKETS, json!(tickets)).await;
+    }
+
+    /// Close the corresponding GitHub issue after a successful merge.
+    /// Extracts the issue number from the ticket_id format `T-{issue_number:03}`.
+    async fn close_github_issue(&self, store: &SharedStore, ticket_id: &str) {
+        let issue_number: u64 = match ticket_id.strip_prefix("T-").and_then(|n| n.parse().ok()) {
+            Some(n) => n,
+            None => {
+                warn!(ticket_id, "Cannot extract GitHub issue number from ticket_id — skipping issue close");
+                return;
+            }
+        };
+
+        let repository: Option<String> = store.get_typed("repository").await;
+        let (owner, repo) = parse_repository(repository.as_deref());
+
+        if owner.is_empty() || repo.is_empty() {
+            warn!(ticket_id, "Repository info missing — cannot close GitHub issue");
+            return;
+        }
+
+        match self.client.close_issue(owner, repo, issue_number).await {
+            Ok(()) => info!(ticket_id, issue_number, "GitHub issue closed after merge"),
+            Err(e) => warn!(ticket_id, issue_number, error = %e, "Failed to close GitHub issue — merge still succeeded"),
+        }
     }
 
     async fn mark_ticket_failed(&self, store: &SharedStore, ticket_id: &str, reason: &str) {

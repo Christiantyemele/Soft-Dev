@@ -63,12 +63,20 @@ impl PrMerger {
 }
 
 /// Build the commit title for a merge.
-/// Format: "Merge PR #123: Ticket title (Resolves T-456)"
+/// Format: "Merge PR #123: Ticket title (Closes #456)"
+///
+/// Uses `Closes #N` with the GitHub issue number so GitHub auto-closes
+/// the corresponding issue when the PR is merged. The issue number is
+/// extracted from the ticket_id format `T-{issue_number:03}`.
 fn build_merge_commit_title(pr_info: &PrInfo) -> String {
     let mut title = format!("Merge PR #{}: {}", pr_info.number, pr_info.title);
 
     if let Some(ticket_id) = &pr_info.ticket_id {
-        title.push_str(&format!(" (Resolves {})", ticket_id));
+        if let Some(issue_number) = ticket_id.strip_prefix("T-") {
+            title.push_str(&format!(" (Closes #{})", issue_number));
+        } else {
+            title.push_str(&format!(" (Resolves {})", ticket_id));
+        }
     }
 
     title
@@ -93,7 +101,7 @@ mod tests {
         };
 
         let title = build_merge_commit_title(&pr_info);
-        assert_eq!(title, "Merge PR #42: Add new feature (Resolves T-100)");
+        assert_eq!(title, "Merge PR #42: Add new feature (Closes #100)");
     }
 
     #[test]

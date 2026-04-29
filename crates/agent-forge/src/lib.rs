@@ -662,7 +662,7 @@ impl ForgePairNode {
         let worktree_path = self
             .workspace_root
             .join("worktrees")
-            .join(format!("{}-{}", worker_id, ticket_id));
+            .join(worker_id);
         let branch_name = WorktreeManager::branch_name(worker_id, ticket_id);
 
         if !worktree_path.exists() {
