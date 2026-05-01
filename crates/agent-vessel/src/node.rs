@@ -334,10 +334,25 @@ impl Node for VesselNode {
                     }
 
                     let worker_reassigned = if let Some(ref wid) = worker_id {
-                        self.assign_worker_for_ci_fix(store, wid, &tid).await;
-                        true
+                        if self.assign_worker_for_ci_fix(store, wid, &tid).await {
+                            true
+                        } else {
+                            info!(
+                                derived_worker = %wid,
+                                "Derived worker not available for CI fix, finding idle forge worker as fallback"
+                            );
+                            if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
+                                self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                            } else {
+                                false
+                            }
+                        }
                     } else {
-                        false
+                        if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
+                            self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                        } else {
+                            false
+                        }
                     };
 
                     self.remove_from_pending_prs(store, *pr_number).await;
@@ -378,6 +393,16 @@ impl Node for VesselNode {
                         reason,
                     )
                     .await;
+
+                    if is_merge_conflict_message(reason) {
+                        warn!(
+                            pr_number,
+                            ticket_id = ?ticket_id,
+                            "MergeBlocked reason indicates conflicts — tracking to prevent re-add loop"
+                        );
+                        self.increment_merge_blocked_attempts(store, *pr_number).await;
+                    }
+
                     let tid = ticket_id
                         .clone()
                         .unwrap_or_else(|| format!("T-{}", pr_number));
@@ -468,10 +493,25 @@ impl Node for VesselNode {
                     }
 
                     let worker_reassigned = if let Some(ref wid) = worker_id {
-                        self.assign_worker_for_ci_fix(store, wid, &tid).await;
-                        true
+                        if self.assign_worker_for_ci_fix(store, wid, &tid).await {
+                            true
+                        } else {
+                            info!(
+                                derived_worker = %wid,
+                                "Derived worker not available for CI timeout fix, finding idle forge worker as fallback"
+                            );
+                            if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
+                                self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                            } else {
+                                false
+                            }
+                        }
                     } else {
-                        false
+                        if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
+                            self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                        } else {
+                            false
+                        }
                     };
 
                     self.remove_from_pending_prs(store, *pr_number).await;
@@ -581,7 +621,7 @@ impl Node for VesselNode {
                     )
                     .await;
 
-                    let worker_id = pending_prs
+                    let derived_worker_id = pending_prs
                         .iter()
                         .find(|p| p["number"].as_u64() == Some(*pr_number))
                         .and_then(|pr| {
@@ -594,12 +634,26 @@ impl Node for VesselNode {
                             )
                         });
 
-                    let worker_reassigned = if let Some(ref wid) = worker_id {
-                        self.assign_worker_for_conflict_rework(store, wid, &tid)
-                            .await;
-                        true
+                    let worker_reassigned = if let Some(ref wid) = derived_worker_id {
+                        if self.assign_worker_for_conflict_rework(store, wid, &tid).await {
+                            true
+                        } else {
+                            info!(
+                                derived_worker = %wid,
+                                "Derived worker not available, finding idle forge worker as fallback"
+                            );
+                            if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
+                                self.assign_worker_for_conflict_rework(store, &fallback_id, &tid).await
+                            } else {
+                                false
+                            }
+                        }
                     } else {
-                        false
+                        if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
+                            self.assign_worker_for_conflict_rework(store, &fallback_id, &tid).await
+                        } else {
+                            false
+                        }
                     };
 
                     self.remove_from_pending_prs(store, *pr_number).await;
@@ -625,6 +679,15 @@ impl Node for VesselNode {
                         .await;
                         any_failure = true;
                     }
+                }
+                VesselOutcome::DocsPrClosed { pr_number, reason } => {
+                    info!(
+                        pr_number,
+                        reason,
+                        "Docs PR closed due to conflicts — lore will regenerate on next deployment"
+                    );
+                    self.remove_from_pending_prs(store, *pr_number).await;
+                    any_success = true;
                 }
             }
         }
@@ -673,11 +736,27 @@ impl VesselNode {
                         pr_title: pr_info.title,
                         pr_body: pr_info.body,
                     }),
+                    Ok(result) if is_merge_conflict_message(&result.message) => {
+                        warn!(
+                            pr_number,
+                            message = %result.message,
+                            "Merge blocked by conflicts — routing to conflict handler"
+                        );
+                        self.handle_conflicts(owner, repo, pr_info).await
+                    }
                     Ok(result) => Ok(VesselOutcome::MergeBlocked {
                         ticket_id,
                         pr_number,
                         reason: result.message,
                     }),
+                    Err(e) if is_merge_conflict_message(&e.to_string()) => {
+                        warn!(
+                            pr_number,
+                            error = %e,
+                            "Merge API error indicates conflicts — routing to conflict handler"
+                        );
+                        self.handle_conflicts(owner, repo, pr_info).await
+                    }
                     Err(e) => Ok(VesselOutcome::MergeBlocked {
                         ticket_id,
                         pr_number,
@@ -768,8 +847,18 @@ impl VesselNode {
         repo: &str,
         pr_info: PrInfo,
     ) -> Result<VesselOutcome> {
-        let ticket_id = pr_info.ticket_id.clone();
         let pr_number = pr_info.number;
+
+        if Self::is_docs_pr(&pr_info) {
+            info!(
+                pr_number,
+                branch = %pr_info.head_branch,
+                "Docs PR has merge conflicts — closing to allow lore to regenerate"
+            );
+            return self.close_docs_pr_with_conflicts(owner, repo, &pr_info).await;
+        }
+
+        let ticket_id = pr_info.ticket_id.clone();
         let worktree_path = self.resolve_worktree_path(&pr_info);
 
         let conflicted_files = match &worktree_path {
@@ -801,7 +890,7 @@ impl VesselNode {
         }
 
         let resolution_md_written = self
-            .write_conflict_resolution_md(&pr_info, &conflicted_files)
+            .write_conflict_resolution_md(&pr_info, &conflicted_files, None)
             .await;
 
         if resolution_md_written {
@@ -961,6 +1050,7 @@ impl VesselNode {
         &self,
         pr_info: &PrInfo,
         conflicted_files: &[String],
+        fallback_ticket_id: Option<&str>,
     ) -> bool {
         let workspace_root = match std::env::var(ENV_WORKSPACE_ROOT).ok() {
             Some(root) => root,
@@ -970,7 +1060,6 @@ impl VesselNode {
             }
         };
 
-        // Extract pair_id from branch name (e.g., "forge-1/T-005" -> "forge-1")
         let branch = &pr_info.head_branch;
         let parts: Vec<&str> = branch.splitn(2, '/').collect();
         if parts.len() != 2 {
@@ -982,18 +1071,24 @@ impl VesselNode {
         }
         let pair_id = parts[0];
 
-        // Use ticket_id from PR info (extracted from title), not from branch name.
-        // The branch name may be stale or mismatched with the actual ticket.
-        let ticket_id = match &pr_info.ticket_id {
-            Some(tid) => tid.clone(),
-            None => {
-                warn!(
+        let ticket_id = pr_info.ticket_id.clone().unwrap_or_else(|| {
+            if let Some(fb) = fallback_ticket_id {
+                info!(
                     branch,
-                    "No ticket_id in PR info — skipping CONFLICT_RESOLUTION.md"
+                    fallback_ticket_id = fb,
+                    "Using fallback ticket_id for CONFLICT_RESOLUTION.md"
                 );
-                return false;
+                fb.to_string()
+            } else {
+                let synthetic = format!("T-{}", pr_info.number);
+                info!(
+                    branch,
+                    synthetic_ticket_id = %synthetic,
+                    "Using synthetic ticket_id for CONFLICT_RESOLUTION.md"
+                );
+                synthetic
             }
-        };
+        });
 
         let shared_dir = PathBuf::from(&workspace_root)
             .join("orchestration")
@@ -1002,7 +1097,6 @@ impl VesselNode {
             .join(&ticket_id)
             .join("shared");
 
-        // Ensure the shared directory exists before writing CONFLICT_RESOLUTION.md.
         if !shared_dir.exists() {
             if let Err(e) = tokio::fs::create_dir_all(&shared_dir).await {
                 warn!(
@@ -1042,7 +1136,7 @@ impl VesselNode {
              - Do NOT abort the merge — the conflict markers are there for you to resolve\n\
              - Resolve ALL conflict markers before committing\n\
              - After you push, VESSEL will re-monitor CI automatically",
-             files_list,
+            files_list,
         );
 
         let path = shared_dir.join("CONFLICT_RESOLUTION.md");
@@ -1073,11 +1167,27 @@ impl VesselNode {
                 ticket_id,
                 pr_number,
             }),
+            Ok(result) if is_merge_conflict_message(&result.message) => {
+                warn!(
+                    pr_number,
+                    message = %result.message,
+                    "Merge blocked by conflicts (no CI) — routing to conflict handler"
+                );
+                self.handle_conflicts(owner, repo, pr_info).await
+            }
             Ok(result) => Ok(VesselOutcome::MergeBlocked {
                 ticket_id,
                 pr_number,
                 reason: result.message,
             }),
+            Err(e) if is_merge_conflict_message(&e.to_string()) => {
+                warn!(
+                    pr_number,
+                    error = %e,
+                    "Merge API error indicates conflicts (no CI) — routing to conflict handler"
+                );
+                self.handle_conflicts(owner, repo, pr_info).await
+            }
             Err(e) => Ok(VesselOutcome::MergeBlocked {
                 ticket_id,
                 pr_number,
@@ -1202,6 +1312,60 @@ impl VesselNode {
         store.get_typed::<u32>(&key).await.unwrap_or(0)
     }
 
+    async fn increment_merge_blocked_attempts(&self, store: &SharedStore, pr_number: u64) {
+        let key = format!("_merge_blocked_{}", pr_number);
+        let current: u32 = store.get_typed::<u32>(&key).await.unwrap_or(0);
+        let next = current + 1;
+        info!(
+            pr_number,
+            attempts = next,
+            "Incremented merge blocked attempt counter"
+        );
+        store.set(&key, json!(next)).await;
+    }
+
+    async fn get_merge_blocked_attempts(&self, store: &SharedStore, pr_number: u64) -> u32 {
+        let key = format!("_merge_blocked_{}", pr_number);
+        store.get_typed::<u32>(&key).await.unwrap_or(0)
+    }
+
+    /// Check if a PR is a docs PR (generated by lore agent).
+    fn is_docs_pr(pr_info: &PrInfo) -> bool {
+        pr_info.head_branch.starts_with("lore/")
+            || pr_info.ticket_id.as_deref() == Some("T-DOCS")
+    }
+
+    /// Close a docs PR that has conflicts, allowing lore to regenerate.
+    async fn close_docs_pr_with_conflicts(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_info: &PrInfo,
+    ) -> Result<VesselOutcome> {
+        let pr_number = pr_info.number;
+        let comment = "This documentation PR has merge conflicts with the main branch. \
+                       Closing to allow the lore agent to regenerate the documentation. \
+                       Lore will create a fresh docs PR on the next deployment cycle.";
+
+        match self.client.close_pull_request(owner, repo, pr_number, Some(comment)).await {
+            Ok(()) => {
+                info!(pr_number, "Closed conflicting docs PR");
+                Ok(VesselOutcome::DocsPrClosed {
+                    pr_number,
+                    reason: "Merge conflicts on docs PR — closed for regeneration".to_string(),
+                })
+            }
+            Err(e) => {
+                warn!(pr_number, error = %e, "Failed to close docs PR with conflicts");
+                Ok(VesselOutcome::Conflicts {
+                    ticket_id: None,
+                    pr_number,
+                    conflicted_files: vec!["Docs PR could not be closed".to_string()],
+                })
+            }
+        }
+    }
+
     /// Recycle a worker from Done back to Idle after its PR is merged.
     async fn recycle_worker(&self, store: &SharedStore, pr: &Value) {
         let worker_id = pr["worker_id"].as_str().unwrap_or("");
@@ -1229,11 +1393,33 @@ impl VesselNode {
     fn derive_worker_id_from_branch(head_branch: &str) -> Option<String> {
         let parts: Vec<&str> = head_branch.splitn(2, '/').collect();
         if parts.len() == 2 {
-            let worker_id = parts[0].strip_prefix("forge-").unwrap_or(parts[0]);
-            Some(format!("forge-{}", worker_id))
+            let prefix = parts[0];
+            if prefix.starts_with("forge-") {
+                Some(prefix.to_string())
+            } else {
+                Some(prefix.to_string())
+            }
         } else {
             None
         }
+    }
+
+    async fn find_idle_forge_worker(&self, store: &SharedStore) -> Option<String> {
+        let slots: HashMap<String, WorkerSlot> =
+            store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
+
+        let mut forge_slots: Vec<_> = slots
+            .iter()
+            .filter(|(id, _)| id.starts_with("forge-"))
+            .collect();
+        forge_slots.sort_by_key(|(id, _)| id.as_str());
+
+        for (id, slot) in forge_slots {
+            if matches!(slot.status, WorkerStatus::Idle | WorkerStatus::Done { .. }) {
+                return Some(id.clone());
+            }
+        }
+        None
     }
 
     async fn assign_worker_for_conflict_rework(
@@ -1241,7 +1427,7 @@ impl VesselNode {
         store: &SharedStore,
         worker_id: &str,
         ticket_id: &str,
-    ) {
+    ) -> bool {
         let mut slots: HashMap<String, WorkerSlot> =
             store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
 
@@ -1276,11 +1462,13 @@ impl VesselNode {
                 issue_url,
             };
             store.set(KEY_WORKER_SLOTS, json!(slots)).await;
+            true
         } else {
             warn!(
                 worker_id,
                 ticket_id, "Worker slot not found — cannot assign for conflict rework"
             );
+            false
         }
     }
 
@@ -1289,7 +1477,7 @@ impl VesselNode {
         store: &SharedStore,
         worker_id: &str,
         ticket_id: &str,
-    ) {
+    ) -> bool {
         let mut slots: HashMap<String, WorkerSlot> =
             store.get_typed(KEY_WORKER_SLOTS).await.unwrap_or_default();
 
@@ -1324,26 +1512,28 @@ impl VesselNode {
                 issue_url,
             };
             store.set(KEY_WORKER_SLOTS, json!(slots)).await;
+
+            let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+            if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
+                if !matches!(ticket.status, TicketStatus::InProgress { .. }) {
+                    info!(
+                        ticket_id,
+                        old_status = ?ticket.status,
+                        "Updating ticket status to InProgress for CI fix"
+                    );
+                    ticket.status = TicketStatus::InProgress {
+                        worker_id: worker_id.to_string(),
+                    };
+                    store.set(KEY_TICKETS, json!(tickets)).await;
+                }
+            }
+            true
         } else {
             warn!(
                 worker_id,
                 ticket_id, "Worker slot not found — cannot assign for CI fix"
             );
-        }
-
-        let mut tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
-        if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
-            if !matches!(ticket.status, TicketStatus::InProgress { .. }) {
-                info!(
-                    ticket_id,
-                    old_status = ?ticket.status,
-                    "Updating ticket status to InProgress for CI fix"
-                );
-                ticket.status = TicketStatus::InProgress {
-                    worker_id: worker_id.to_string(),
-                };
-                store.set(KEY_TICKETS, json!(tickets)).await;
-            }
+            false
         }
     }
 
@@ -1520,6 +1710,13 @@ impl VesselNode {
 
         Ok(())
     }
+}
+
+fn is_merge_conflict_message(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("merge conflict")
+        || lower.contains("merge_conflict")
+        || (lower.contains("405") && lower.contains("method not allowed"))
 }
 
 fn parse_repository(repository: Option<&str>) -> (&str, &str) {
