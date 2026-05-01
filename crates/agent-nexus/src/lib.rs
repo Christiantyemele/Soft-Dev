@@ -337,19 +337,28 @@ impl NexusNode {
                     }
                 }
 
-                // For PRs without ticket_id, check if they've exceeded conflict resolution attempts
-                // This prevents re-adding PRs that are awaiting human intervention
+                // For PRs without ticket_id, check if they've exceeded conflict
+                // resolution or merge-blocked attempts. This prevents re-adding
+                // PRs that are awaiting human intervention or stuck in a loop.
                 if pr.ticket_id.is_none() {
                     let conflict_attempts_key = format!("_conflict_attempts_{}", pr.number);
                     let conflict_attempts: u32 = store
                         .get_typed(&conflict_attempts_key)
                         .await
                         .unwrap_or(0);
-                    if conflict_attempts >= MAX_CONFLICT_RESOLUTION_ATTEMPTS {
+                    let merge_blocked_key = format!("_merge_blocked_{}", pr.number);
+                    let merge_blocked_attempts: u32 = store
+                        .get_typed(&merge_blocked_key)
+                        .await
+                        .unwrap_or(0);
+                    if conflict_attempts >= MAX_CONFLICT_RESOLUTION_ATTEMPTS
+                        || merge_blocked_attempts >= MAX_CONFLICT_RESOLUTION_ATTEMPTS
+                    {
                         info!(
                             pr_number = pr.number,
-                            attempts = conflict_attempts,
-                            "Skipping re-add of PR that has exceeded conflict resolution attempts — awaiting human intervention"
+                            conflict_attempts,
+                            merge_blocked_attempts,
+                            "Skipping re-add of PR that has exceeded conflict/merge-blocked attempts — awaiting human intervention"
                         );
                         continue;
                     }
