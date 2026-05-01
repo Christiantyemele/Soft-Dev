@@ -1,36 +1,121 @@
 // crates/agent-lore/src/types.rs
+use anyhow::Result;
+use config::Registry;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct LoreConfig {
-    pub workspace_root: PathBuf,
-    pub persona_path: PathBuf,
-    pub docs_dir: PathBuf,
-    pub adr_dir: PathBuf,
+    pub workspace_root: std::path::PathBuf,
+    pub persona_path: std::path::PathBuf,
+    pub docs_dir: std::path::PathBuf,
+    pub adr_dir: std::path::PathBuf,
+    pub github_token: String,
 }
 
 impl LoreConfig {
-    pub fn new(workspace_root: impl Into<PathBuf>, persona_path: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        workspace_root: impl Into<std::path::PathBuf>,
+        persona_path: impl Into<std::path::PathBuf>,
+    ) -> Self {
         let workspace_root = workspace_root.into();
         Self {
             docs_dir: workspace_root.join("docs"),
             adr_dir: workspace_root.join("docs").join("adr"),
             workspace_root,
             persona_path: persona_path.into(),
+            github_token: String::new(),
         }
     }
 
-    pub fn from_env() -> Self {
+    /// Create config with explicit paths and token resolved from registry.
+    pub fn new_with_registry(
+        workspace_root: impl Into<std::path::PathBuf>,
+        persona_path: impl Into<std::path::PathBuf>,
+        registry_path: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let registry = Registry::load(registry_path)?;
+        let github_token = registry.resolve_github_token("lore")?;
+        tracing::info!("LORE resolved GitHub token from registry");
+
+        let workspace_root = workspace_root.into();
+        Ok(Self {
+            docs_dir: workspace_root.join("docs"),
+            adr_dir: workspace_root.join("docs").join("adr"),
+            workspace_root,
+            persona_path: persona_path.into(),
+            github_token,
+        })
+    }
+
+    /// Create config using per-agent token from registry (if configured).
+    /// Falls back to GITHUB_PERSONAL_ACCESS_TOKEN for backward compatibility.
+    pub fn from_registry(registry_path: impl AsRef<Path>) -> Result<Self> {
+        let registry = Registry::load(registry_path)?;
+        let github_token = registry.resolve_github_token("lore")?;
+
         let workspace_root = std::env::var("AGENTFLOW_WORKSPACE_ROOT")
-            .map(PathBuf::from)
+            .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
         let persona_path = workspace_root
             .join("orchestration")
             .join("agent")
             .join("agents")
             .join("lore.agent.md");
-        Self::new(workspace_root, persona_path)
+        Ok(Self {
+            docs_dir: workspace_root.join("docs"),
+            adr_dir: workspace_root.join("docs").join("adr"),
+            workspace_root,
+            persona_path,
+            github_token,
+        })
+    }
+
+    pub fn from_env() -> Self {
+        let workspace_root = std::env::var("AGENTFLOW_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+        let persona_path = workspace_root
+            .join("orchestration")
+            .join("agent")
+            .join("agents")
+            .join("lore.agent.md");
+
+        // Try workspace_root first, then current_dir as fallback
+        let registry_path = if workspace_root.join("orchestration/agent/registry.json").exists() {
+            Some(workspace_root.join("orchestration/agent/registry.json"))
+        } else {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.join("orchestration").join("agent").join("registry.json"))
+        };
+
+        let github_token = match registry_path {
+            Some(path) if path.exists() => {
+                match Registry::load(&path).and_then(|reg| reg.resolve_github_token("lore")) {
+                    Ok(token) => {
+                        tracing::info!(registry = %path.display(), "LORE resolved GitHub token from registry");
+                        token
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, registry = %path.display(), "LORE failed to resolve token from registry, falling back");
+                        std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN").unwrap_or_default()
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!("LORE: registry.json not found, falling back to GITHUB_PERSONAL_ACCESS_TOKEN");
+                std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN").unwrap_or_default()
+            }
+        };
+
+        Self {
+            docs_dir: workspace_root.join("docs"),
+            adr_dir: workspace_root.join("docs").join("adr"),
+            workspace_root,
+            persona_path,
+            github_token,
+        }
     }
 }
 

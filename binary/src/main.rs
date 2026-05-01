@@ -107,12 +107,14 @@ async fn main() -> Result<()> {
     let forge = Arc::new(ForgeNode::new(
         &workspace_dir,
         orchestrator_dir.join("orchestration/agent/agents/forge.agent.md"),
+        &github_token.unwrap_or_default(),
     ));
     let vessel = Arc::new(VesselNode::from_env());
-    let lore = Arc::new(LoreNode::new(
+    let lore = Arc::new(LoreNode::new_with_registry(
         &workspace_dir,
         orchestrator_dir.join("orchestration/agent/agents/lore.agent.md"),
-    ));
+        orchestrator_dir.join("orchestration/agent/registry.json"),
+    )?);
 
     let flow = Flow::new("nexus")
         .add_node(

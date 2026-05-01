@@ -70,6 +70,16 @@ impl GithubRestClient {
             .body(body.to_vec())
     }
 
+    fn build_post(&self, url: &str, body: &[u8]) -> reqwest::RequestBuilder {
+        self.client
+            .post(url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Content-Type", "application/json")
+            .body(body.to_vec())
+    }
+
     async fn send_with_retry<F>(&self, build: F) -> Result<reqwest::Response>
     where
         F: Fn() -> reqwest::RequestBuilder,
@@ -193,6 +203,28 @@ impl GithubRestClient {
             .context("Failed to parse GitHub response")
     }
 
+    async fn post_json<T: for<'de> Deserialize<'de>, B: Serialize>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T> {
+        debug!(url, "GitHub API POST");
+        let payload = serde_json::to_vec(body)?;
+        let resp = self
+            .send_with_retry(|| self.build_post(url, &payload))
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub API error {}: {}", status, body);
+        }
+
+        resp.json::<T>()
+            .await
+            .context("Failed to parse GitHub response")
+    }
+
     async fn patch_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         url: &str,
@@ -281,7 +313,7 @@ impl GithubRestClient {
         }
 
         let checks = self.get_check_suites_status(owner, repo, ref_sha).await?;
-        if checks.is_terminal() && checks != CiStatus::Success {
+        if checks.is_terminal() {
             return Ok(checks);
         }
 
@@ -469,9 +501,9 @@ impl GithubRestClient {
         Ok(PrInfo {
             number: resp.number,
             head_sha: resp.head.sha,
+            ticket_id: extract_ticket_id(&resp.title, &resp.body, &resp.head.ref_field),
             head_branch: resp.head.ref_field,
             base_branch: resp.base.ref_field,
-            ticket_id: extract_ticket_id(&resp.title, &resp.body),
             title: resp.title,
             body: resp.body,
             state: match resp.state.as_str() {
@@ -509,6 +541,34 @@ impl GithubRestClient {
             sha: resp.sha,
             message: resp.message,
         })
+    }
+
+    /// Close a pull request with an optional comment.
+    pub async fn close_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        comment: Option<&str>,
+    ) -> Result<()> {
+        if let Some(text) = comment {
+            let comment_url = format!(
+                "{}/repos/{}/{}/issues/{}/comments",
+                GITHUB_API_BASE, owner, repo, pr_number
+            );
+            let body = serde_json::json!({ "body": text });
+            let _: serde_json::Value = self.post_json(&comment_url, &body).await?;
+        }
+
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            GITHUB_API_BASE, owner, repo, pr_number
+        );
+        let body = serde_json::json!({ "state": "closed" });
+        let _: serde_json::Value = self.patch_json(&url, &body).await?;
+
+        info!(pr_number, owner, repo, "Closed pull request");
+        Ok(())
     }
 
     /// Check if the repository has any GitHub Actions workflow files.
@@ -565,15 +625,53 @@ impl GithubRestClient {
             .map(|pr| PrInfo {
                 number: pr.number,
                 head_sha: pr.head.sha,
+                ticket_id: extract_ticket_id(&pr.title, &pr.body, &pr.head.ref_field),
                 head_branch: pr.head.ref_field,
                 base_branch: pr.base.ref_field,
-                ticket_id: extract_ticket_id(&pr.title, &pr.body),
                 title: pr.title,
                 body: pr.body,
                 state: PrState::Open,
                 mergeable: pr.mergeable,
             })
             .collect())
+    }
+
+    /// Create a new pull request.
+    /// Returns the PR number on success.
+    pub async fn create_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        head: &str,
+        base: &str,
+        body: Option<&str>,
+    ) -> Result<u64> {
+        let url = format!("{}/repos/{}/{}/pulls", GITHUB_API_BASE, owner, repo);
+
+        let request_body = serde_json::json!({
+            "title": title,
+            "head": head,
+            "base": base,
+            "body": body.unwrap_or(""),
+        });
+
+        let body_bytes = serde_json::to_vec(&request_body)?;
+        let resp = self.send_with_retry(|| self.build_post(&url, &body_bytes)).await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub create PR error {}: {}", status, body);
+        }
+
+        let pr: PullRequestResponse = resp
+            .json()
+            .await
+            .context("Failed to parse PR creation response")?;
+
+        info!(pr_number = pr.number, "Created pull request");
+        Ok(pr.number)
     }
 
     pub async fn list_open_issues(
@@ -739,7 +837,7 @@ fn map_status_state(state: &str) -> CiStatus {
     }
 }
 
-fn extract_ticket_id(title: &str, body: &Option<String>) -> Option<String> {
+fn extract_ticket_id(title: &str, body: &Option<String>, branch: &str) -> Option<String> {
     let patterns = [
         regex::Regex::new(r"T-(\d+)").ok(),
         regex::Regex::new(r"#(\d+)").ok(),
@@ -753,6 +851,9 @@ fn extract_ticket_id(title: &str, body: &Option<String>) -> Option<String> {
             if let Some(caps) = pattern.captures(body) {
                 return Some(format!("T-{}", &caps[1]));
             }
+        }
+        if let Some(caps) = pattern.captures(branch) {
+            return Some(format!("T-{}", &caps[1]));
         }
     }
     None

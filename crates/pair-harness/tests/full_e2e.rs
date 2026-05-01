@@ -198,7 +198,7 @@ async fn test_worktree_provisioning() {
     let manager = WorktreeManager::new(main_path.clone());
 
     // Create worktree
-    let result = manager.create_worktree("pair-1", "T-42");
+    let result = manager.create_worktree("pair-1", "T-42", "dummy-token").await;
     match result {
         Ok(setup_result) => {
             assert!(setup_result.path.exists());

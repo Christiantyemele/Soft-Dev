@@ -18,6 +18,7 @@ chrono = { version = "0.4", features = ["serde"] }
 libc = "0.2"
 which = "7"
 config = { path = "../config" }
+reqwest = { workspace = true, features = ["blocking"] }
 
 [dev-dependencies]
 tempfile = "3"
