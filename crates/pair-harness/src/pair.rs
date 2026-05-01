@@ -997,7 +997,8 @@ impl ForgeSentinelPair {
     async fn provision_worktree(&mut self, ticket: &Ticket) -> Result<()> {
         let result = self
             .worktree
-            .create_worktree(&self.config.pair_id, &ticket.id)
+            .create_worktree(&self.config.pair_id, &ticket.id, &self.config.github_token)
+            .await
             .context("Failed to create worktree")?;
         self.config.worktree = result.path;
 

@@ -25,8 +25,14 @@ async fn main() -> Result<()> {
     info!("Starting REAL End-to-End Orchestration (Event-Driven FORGE-SENTINEL Pairs + VESSEL)");
 
     // 1. Validate Environment
-    let github_token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
-        .expect("GITHUB_PERSONAL_ACCESS_TOKEN must be set");
+    // Use registry to resolve per-agent token for FORGE
+    let registry_path = std::env::current_dir()?
+        .join("orchestration")
+        .join("agent")
+        .join("registry.json");
+    let registry = config::Registry::load(&registry_path)?;
+    let github_token = registry.resolve_github_token("forge")
+        .expect("AGENT_FORGE_GITHUB_TOKEN or GITHUB_PERSONAL_ACCESS_TOKEN must be set");
     let repo = std::env::var("GITHUB_REPOSITORY")
         .expect("GITHUB_REPOSITORY must be set (e.g. owner/repo)");
 
@@ -70,13 +76,14 @@ async fn main() -> Result<()> {
         .join("agent")
         .join("registry.json");
 
-    let nexus = Arc::new(NexusNode::new(persona_path, registry_path));
+    let nexus = Arc::new(NexusNode::new(persona_path, registry_path.clone()));
     let forge_pair = Arc::new(ForgePairNode::new(&workspace_dir, &github_token));
     let vessel = Arc::new(VesselNode::from_env());
-    let lore = Arc::new(LoreNode::new(
+    let lore = Arc::new(LoreNode::new_with_registry(
         &workspace_dir,
         orchestrator_dir.join("orchestration/agent/agents/lore.agent.md"),
-    ));
+        registry_path,
+    )?);
 
     // 4. Setup Flow with Routing
     // The ForgePairNode handles the full FORGE-SENTINEL lifecycle:

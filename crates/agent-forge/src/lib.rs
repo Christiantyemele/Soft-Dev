@@ -58,13 +58,15 @@ pub struct ForgeStatus {
 pub struct ForgeNode {
     pub workspace_root: PathBuf,
     pub persona_path: PathBuf,
+    pub github_token: String,
 }
 
 impl ForgeNode {
-    pub fn new(workspace_root: impl Into<PathBuf>, persona_path: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace_root: impl Into<PathBuf>, persona_path: impl Into<PathBuf>, github_token: &str) -> Self {
         Self {
             workspace_root: workspace_root.into(),
             persona_path: persona_path.into(),
+            github_token: github_token.to_string(),
         }
     }
 
@@ -127,7 +129,8 @@ impl BatchNode for ForgeNode {
 
         // Create worktree for this worker
         let setup_result = worktree_mgr
-            .create_worktree(&worker_id, &ticket_id)
+            .create_worktree(&worker_id, &ticket_id, &self.github_token)
+            .await
             .map_err(|e| anyhow!("Failed to create worktree: {:#}", e))?;
         let worktree_path = setup_result.path;
 

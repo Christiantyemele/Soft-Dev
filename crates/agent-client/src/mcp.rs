@@ -89,31 +89,47 @@ impl McpSession {
         let pat = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
             .context("GITHUB_PERSONAL_ACCESS_TOKEN must be set for hosted MCP")?;
 
-        info!("Spawning hosted GitHub MCP server via mcp-proxy bridge");
-        let mut child = Command::new("mcp-proxy")
-            .arg("convert")
-            .arg("https://api.githubcopilot.com/mcp/")
-            .arg("--auth")
-            .arg(format!("Bearer {}", pat))
-            .arg("--protocol")
-            .arg("stream")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn hosted MCP npx bridge")?;
+        Self::connect_hosted_with_token(&pat).await
+    }
 
-        let stdin = child.stdin.take().context("Failed to open MCP stdin")?;
-        let stdout = BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
+    /// Spawn the GitHub MCP server with an explicit token.
+    /// Respects GITHUB_MCP_TYPE env var: "docker" uses Docker, anything else uses hosted mcp-proxy.
+    pub async fn connect_hosted_with_token(pat: &str) -> Result<Self> {
+        let mcp_type = std::env::var("GITHUB_MCP_TYPE").unwrap_or_else(|_| "hosted".to_string());
+        match mcp_type.as_str() {
+            "docker" => {
+                // Docker MCP doesn't need the PAT as an argument — it uses env var
+                std::env::set_var("GITHUB_PERSONAL_ACCESS_TOKEN", pat);
+                Self::connect(DOCKER_MCP_CMD).await
+            }
+            _ => {
+                info!("Spawning hosted GitHub MCP server via mcp-proxy bridge");
+                let mut child = Command::new("mcp-proxy")
+                    .arg("convert")
+                    .arg("https://api.githubcopilot.com/mcp/")
+                    .arg("--auth")
+                    .arg(format!("Bearer {}", pat))
+                    .arg("--protocol")
+                    .arg("stream")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::inherit())
+                    .spawn()
+                    .context("Failed to spawn hosted MCP npx bridge")?;
 
-        let mut session = Self {
-            _child: child,
-            stdin,
-            stdout,
-            next_id: 1,
-        };
-        session.initialize().await?;
-        Ok(session)
+                let stdin = child.stdin.take().context("Failed to open MCP stdin")?;
+                let stdout = BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
+
+                let mut session = Self {
+                    _child: child,
+                    stdin,
+                    stdout,
+                    next_id: 1,
+                };
+                session.initialize().await?;
+                Ok(session)
+            }
+        }
     }
 
     // ── Private: JSON-RPC helpers ─────────────────────────────────────────

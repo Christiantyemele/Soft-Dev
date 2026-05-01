@@ -18,6 +18,8 @@ pub struct RegistryEntry {
     pub model_backend: Option<String>, // e.g. "anthropic/claude-sonnet-4-5", "gemini/gemini-2.5-pro"
     #[serde(default)]
     pub routing_key: Option<String>, // LiteLLM proxy routing key, e.g. "forge-key"
+    #[serde(default)]
+    pub github_token_env: Option<String>, // Per-agent GitHub token env var, e.g. "AGENT_NEXUS_GITHUB_TOKEN"
 }
 
 /// The full registry — a thin wrapper around the team list.
@@ -60,6 +62,45 @@ impl Registry {
                 .map(|i| format!("forge-{}", i))
                 .collect(),
         }
+    }
+
+    /// All worker slot names including non-forge agents like "lore".
+    /// Returns slots for all active agents with instances > 0.
+    pub fn all_worker_slots(&self) -> Vec<String> {
+        let mut slots = Vec::new();
+        for entry in self.active_agents() {
+            if entry.instances > 0 {
+                if entry.id == "forge" {
+                    for i in 1..=entry.instances {
+                        slots.push(format!("forge-{}", i));
+                    }
+                } else if entry.instances == 1 {
+                    slots.push(entry.id.clone());
+                } else {
+                    for i in 1..=entry.instances {
+                        slots.push(format!("{}-{}", entry.id, i));
+                    }
+                }
+            }
+        }
+        slots
+    }
+
+    /// Resolve GitHub token for a given agent.
+    /// If the agent has `github_token_env` set, reads from that env var.
+    /// Falls back to `GITHUB_PERSONAL_ACCESS_TOKEN` for backward compatibility.
+    pub fn resolve_github_token(&self, agent_id: &str) -> Result<String> {
+        let token = match self.get(agent_id) {
+            Some(entry) => match &entry.github_token_env {
+                Some(env_var) => std::env::var(env_var)
+                    .with_context(|| format!("{} not set for agent {}", env_var, agent_id))?,
+                None => std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
+                    .context("GITHUB_PERSONAL_ACCESS_TOKEN not set (fallback for agent without github_token_env)")?,
+            },
+            None => std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
+                .context("GITHUB_PERSONAL_ACCESS_TOKEN not set (agent not found in registry)")?,
+        };
+        Ok(token)
     }
 }
 

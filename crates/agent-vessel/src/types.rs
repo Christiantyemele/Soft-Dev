@@ -2,8 +2,11 @@
 //
 // VESSEL-specific types and configuration.
 
+use anyhow::Result;
+use config::Registry;
 use pocketflow_core::{CiPollConfig, MergeMethod};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// CI readiness state — mirrors the nexus CiReadiness for store deserialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +26,20 @@ pub struct VesselConfig {
 }
 
 impl VesselConfig {
+    /// Create config using per-agent token from registry (if configured).
+    /// Falls back to GITHUB_PERSONAL_ACCESS_TOKEN for backward compatibility.
+    pub fn from_registry(registry_path: impl AsRef<Path>) -> Result<Self> {
+        let registry = Registry::load(registry_path)?;
+        let github_token = registry.resolve_github_token("vessel")?;
+
+        Ok(Self {
+            ci_poll: CiPollConfig::default(),
+            merge_method: MergeMethod::default(),
+            github_token,
+        })
+    }
+
+    /// Create config using GITHUB_PERSONAL_ACCESS_TOKEN (fallback).
     pub fn from_env() -> Self {
         let github_token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
             .expect("GITHUB_PERSONAL_ACCESS_TOKEN must be set");
@@ -76,6 +93,11 @@ pub enum VesselOutcome {
         pr_number: u64,
         conflicted_files: Vec<String>,
     },
+    /// Docs PR with conflicts — closed to allow lore to regenerate
+    DocsPrClosed {
+        pr_number: u64,
+        reason: String,
+    },
 }
 
 impl VesselOutcome {
@@ -87,6 +109,7 @@ impl VesselOutcome {
             VesselOutcome::CiTimeout { ticket_id, .. } => ticket_id.as_deref(),
             VesselOutcome::CiMissing { ticket_id, .. } => ticket_id.as_deref(),
             VesselOutcome::Conflicts { ticket_id, .. } => ticket_id.as_deref(),
+            VesselOutcome::DocsPrClosed { .. } => None,
         }
     }
 
@@ -98,6 +121,7 @@ impl VesselOutcome {
             VesselOutcome::CiTimeout { pr_number, .. } => *pr_number,
             VesselOutcome::CiMissing { pr_number, .. } => *pr_number,
             VesselOutcome::Conflicts { pr_number, .. } => *pr_number,
+            VesselOutcome::DocsPrClosed { pr_number, .. } => *pr_number,
         }
     }
 }
