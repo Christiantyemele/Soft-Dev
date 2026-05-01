@@ -473,6 +473,7 @@ impl GithubRestClient {
             base_branch: resp.base.ref_field,
             ticket_id: extract_ticket_id(&resp.title, &resp.body),
             title: resp.title,
+            body: resp.body,
             state: match resp.state.as_str() {
                 "open" => PrState::Open,
                 "closed" if resp.merged.unwrap_or(false) => PrState::Merged,
@@ -568,6 +569,7 @@ impl GithubRestClient {
                 base_branch: pr.base.ref_field,
                 ticket_id: extract_ticket_id(&pr.title, &pr.body),
                 title: pr.title,
+                body: pr.body,
                 state: PrState::Open,
                 mergeable: pr.mergeable,
             })
