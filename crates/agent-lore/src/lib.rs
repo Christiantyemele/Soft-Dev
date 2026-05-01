@@ -17,8 +17,8 @@ pub mod types;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use config::KEY_PENDING_PRS;
-use github::client::McpGithubClient;
+use config::{KEY_PENDING_PRS, KEY_TICKETS};
+use github::GithubRestClient;
 use pocketflow_core::{Action, Node, SharedStore};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -28,6 +28,7 @@ use tracing::{debug, info, warn};
 use crate::types::ChangeCategory;
 use adr::AdrGenerator;
 use changelog::ChangelogManager;
+use config::Ticket;
 use docs::DocsManager;
 use readme::ReadmeManager;
 use retrospective::RetrospectiveGenerator;
@@ -49,6 +50,16 @@ impl LoreNode {
     pub fn new(workspace_root: impl Into<PathBuf>, persona_path: impl Into<PathBuf>) -> Self {
         let config = LoreConfig::new(workspace_root, persona_path);
         Self::from_config(config)
+    }
+
+    /// Create LORE node with token resolved from registry.
+    pub fn new_with_registry(
+        workspace_root: impl Into<PathBuf>,
+        persona_path: impl Into<PathBuf>,
+        registry_path: impl AsRef<std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        let config = LoreConfig::new_with_registry(workspace_root, persona_path, registry_path)?;
+        Ok(Self::from_config(config))
     }
 
     pub fn from_config(config: LoreConfig) -> Self {
@@ -112,6 +123,11 @@ impl LoreNode {
             .collect()
     }
 
+    async fn get_issue_body(&self, store: &SharedStore, ticket_id: &str) -> Option<String> {
+        let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
+        tickets.iter().find(|t| t.id == ticket_id).map(|t| t.body.clone())
+    }
+
     async fn get_documentation_tasks(&self, store: &SharedStore) -> Vec<LoreTask> {
         let mut tasks = Vec::new();
 
@@ -136,6 +152,9 @@ impl LoreNode {
                         .unwrap_or_else(|| format!("Ticket {}", ticket_id));
                     let pr_body = event.payload["pr_body"].as_str().map(String::from);
 
+                    let issue_body = self.get_issue_body(store, ticket_id).await;
+                    let enriched_body = issue_body.or(pr_body);
+
                     let needs_adr = !self.adr_generator.adr_exists_for_ticket(ticket_id).await;
 
                     if needs_adr {
@@ -143,31 +162,39 @@ impl LoreNode {
                             .strip_prefix(&format!("[{}] ", ticket_id))
                             .unwrap_or(&pr_title);
 
-                        let context = if let Some(ref b) = pr_body {
+                        let (context, decision_summary, consequences) = if let Some(ref b) = enriched_body {
                             let lines: Vec<&str> = b
                                 .lines()
                                 .map(|l| l.trim())
                                 .filter(|l| {
                                     !l.is_empty() && !l.starts_with('#') && !l.starts_with("---")
                                 })
-                                .take(5)
+                                .take(8)
                                 .collect();
-                            lines.join("\n")
+                            
+                            let ctx = lines.join("\n");
+                            
+                            let decision = if lines.iter().any(|l| l.contains("implement") || l.contains("add") || l.contains("create")) {
+                                format!("Adopt the implementation approach described in {}.", adr_title)
+                            } else if lines.iter().any(|l| l.contains("fix") || l.contains("resolve")) {
+                                format!("Apply the fix described in {}.", adr_title)
+                            } else {
+                                format!("Implement changes described in PR #{} for ticket {}.", pr_number, ticket_id)
+                            };
+                            
+                            let conseq = format!(
+                                "{} is now implemented and merged into the main branch. This resolves ticket {}.",
+                                adr_title, ticket_id
+                            );
+                            
+                            (ctx, decision, conseq)
                         } else {
-                            format!(
-                                "Changes merged in PR #{} for ticket {}.",
-                                pr_number, ticket_id
+                            (
+                                format!("Changes merged in PR #{} for ticket {}.", pr_number, ticket_id),
+                                format!("Implement changes described in PR #{} for ticket {}.", pr_number, ticket_id),
+                                format!("Ticket {} is now resolved and merged into main branch.", ticket_id),
                             )
                         };
-
-                        let decision_summary = format!(
-                            "Implement changes described in PR #{} for ticket {}.",
-                            pr_number, ticket_id
-                        );
-                        let consequences = format!(
-                            "Ticket {} is now resolved and merged into main branch.",
-                            ticket_id
-                        );
 
                         tasks.push(LoreTask::AdrGeneration {
                             decision: ArchitecturalDecision::new(
@@ -186,7 +213,7 @@ impl LoreNode {
                         pr_number,
                         changes: Vec::new(),
                         pr_title: Some(pr_title),
-                        pr_body,
+                        pr_body: enriched_body,
                     });
                 }
             }
@@ -250,29 +277,34 @@ impl LoreNode {
                         && !l.starts_with("---")
                         && !l.starts_with("## ")
                         && !l.starts_with("Resolves #")
+                        && !l.starts_with("- [")
+                        && !l.starts_with("* [")
                 })
                 .collect();
 
             if !lines.is_empty() {
+                let section_keywords = ["Description", "Summary", "What", "Changes", "Implementation"];
                 let impl_section = lines.iter().position(|l| {
-                    l.contains("Implementation") || l.contains("Changes") || l.contains("What")
+                    section_keywords.iter().any(|kw| l.contains(kw))
                 });
                 let start = impl_section.map(|p| p + 1).unwrap_or(0);
 
                 let content_lines: Vec<&&str> = lines[start..]
                     .iter()
-                    .filter(|l| !l.starts_with('-') || l.len() > 3)
+                    .filter(|l| {
+                        (!l.starts_with('-') && !l.starts_with('*')) || l.len() > 20
+                    })
                     .take(3)
                     .collect();
 
                 if !content_lines.is_empty() {
-                    let summary = content_lines[0].trim_start_matches('-').trim();
-                    if summary.len() > 10 {
+                    let summary = content_lines[0].trim_start_matches('-').trim_start_matches('*').trim();
+                    if summary.len() > 15 {
                         let mut entry = summary.to_string();
                         if let Some(first) = entry.get_mut(0..1) {
                             first.make_ascii_uppercase();
                         }
-                        if !entry.ends_with('.') {
+                        if !entry.ends_with('.') && !entry.ends_with('!') && !entry.ends_with('?') {
                             entry.push('.');
                         }
                         return entry;
@@ -391,24 +423,75 @@ impl LoreNode {
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(workspace)
             .output()?;
-        let current_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let original_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-        if current_branch == branch_name {
-            info!("LORE: Already on docs branch");
+        // Stash uncommitted doc changes so we can switch branches cleanly.
+        let stash_output = StdCommand::new("git")
+            .args(["stash", "--include-untracked"])
+            .current_dir(workspace)
+            .output()?;
+        let stashed = stash_output.status.success()
+            && !String::from_utf8_lossy(&stash_output.stdout).contains("No local changes");
+
+        // Fetch origin/main so the docs branch is based on the latest main,
+        // not on the forge branch that was previously checked out.
+        // This prevents merge conflicts when the PR is opened against main.
+        let fetch_output = StdCommand::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(workspace)
+            .output()?;
+        if !fetch_output.status.success() {
+            let stderr = String::from_utf8_lossy(&fetch_output.stderr);
+            warn!(error = %stderr, "LORE: git fetch origin/main failed — will try creating branch from current HEAD");
+        }
+
+        let base_arg = if fetch_output.status.success() {
+            "origin/main"
         } else {
-            let output = StdCommand::new("git")
-                .args(["checkout", "-b", &branch_name])
+            ""
+        };
+
+        let checkout_args = if base_arg.is_empty() {
+            vec!["checkout", "-b", &branch_name]
+        } else {
+            vec!["checkout", "-b", &branch_name, base_arg]
+        };
+
+        let output = StdCommand::new("git")
+            .args(&checkout_args)
+            .current_dir(workspace)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stashed {
+                let _ = StdCommand::new("git")
+                    .args(["stash", "pop"])
+                    .current_dir(workspace)
+                    .output();
+            }
+            return Err(anyhow!(
+                "Failed to create branch {}: {}",
+                branch_name,
+                stderr
+            ));
+        }
+        info!(
+            branch = %branch_name,
+            base = if base_arg.is_empty() { "HEAD" } else { base_arg },
+            "LORE: Created docs branch from {}",
+            if base_arg.is_empty() { "current HEAD" } else { "origin/main" }
+        );
+
+        // Restore stashed doc changes on top of the new branch.
+        if stashed {
+            let pop_output = StdCommand::new("git")
+                .args(["stash", "pop"])
                 .current_dir(workspace)
                 .output()?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!(
-                    "Failed to create branch {}: {}",
-                    branch_name,
-                    stderr
-                ));
+            if !pop_output.status.success() {
+                let stderr = String::from_utf8_lossy(&pop_output.stderr);
+                warn!(error = %stderr, "LORE: git stash pop had issues — some doc changes may need manual resolution");
             }
-            info!("LORE: Created branch {}", branch_name);
         }
 
         let output = StdCommand::new("git")
@@ -429,6 +512,10 @@ impl LoreNode {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("nothing to commit") {
                 info!("LORE: No changes to commit");
+                let _ = StdCommand::new("git")
+                    .args(["checkout", &original_branch])
+                    .current_dir(workspace)
+                    .output();
                 return Ok(());
             }
             return Err(anyhow!("Failed to commit: {}", stderr));
@@ -441,9 +528,25 @@ impl LoreNode {
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("Failed to push branch {}: {}", branch_name, stderr));
+            return Err(anyhow!(
+                "Failed to push branch {}: {}",
+                branch_name,
+                stderr
+            ));
         }
         info!("LORE: Pushed branch {}", branch_name);
+
+        // Switch back to the original branch (or main) so the workspace
+        // is in a clean state for the next pipeline cycle.
+        let restore_branch = if original_branch == branch_name {
+            "main"
+        } else {
+            &original_branch
+        };
+        let _ = StdCommand::new("git")
+            .args(["checkout", restore_branch])
+            .current_dir(workspace)
+            .output();
 
         Ok(())
     }
@@ -466,9 +569,7 @@ impl LoreNode {
         let owner = parts[0];
         let repo_name = parts[1];
 
-        let mcp_command =
-            std::env::var("MCP_CLI_COMMAND").unwrap_or_else(|_| "mcp-cli".to_string());
-        let client = McpGithubClient::new(&mcp_command);
+        let client = GithubRestClient::new(&self.config.github_token);
 
         let mut pr_body = String::from("## Documentation Update\n\n");
         pr_body.push_str("This PR contains automated documentation updates generated by LORE.\n\n");
@@ -484,7 +585,7 @@ impl LoreNode {
             chrono::Utc::now().format("%Y-%m-%d %H:%M")
         );
         let pr_number = client
-            .create_pull_request(owner, repo_name, &title, branch_name, "main")
+            .create_pull_request(owner, repo_name, &title, branch_name, "main", Some(&pr_body))
             .await?;
 
         info!(pr_number, "LORE: Created documentation PR");
