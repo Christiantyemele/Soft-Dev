@@ -4,6 +4,52 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// CLI backend type for agent execution.
+/// Determines which CLI tool is used to spawn agent processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CliBackend {
+    /// Claude Code CLI (default)
+    #[default]
+    Claude,
+    /// OpenAI Codex CLI
+    Codex,
+}
+
+impl CliBackend {
+    /// Parse from string, with fallback to default.
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "codex" => CliBackend::Codex,
+            "claude" => CliBackend::Claude,
+            _ => CliBackend::Claude, // Default fallback
+        }
+    }
+
+    /// Convert to string for display.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CliBackend::Claude => "claude",
+            CliBackend::Codex => "codex",
+        }
+    }
+
+    /// Get the CLI binary name/path.
+    pub fn binary_name(&self) -> &'static str {
+        match self {
+            CliBackend::Claude => "claude",
+            CliBackend::Codex => "codex",
+        }
+    }
+
+    /// Get the environment variable for CLI path override.
+    pub fn path_env_var(&self) -> &'static str {
+        match self {
+            CliBackend::Claude => "CLAUDE_PATH",
+            CliBackend::Codex => "CODEX_PATH",
+        }
+    }
+}
+
 /// Filesystem events detected by the watcher.
 /// These drive the event-driven harness state machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +102,8 @@ pub struct PairConfig {
     pub github_token: String,
     pub max_resets: u32,
     pub watchdog_timeout_secs: u64,
+    /// CLI backend to use for this pair (claude or codex)
+    pub cli_backend: CliBackend,
 }
 
 impl PairConfig {
@@ -88,6 +136,7 @@ impl PairConfig {
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
+            cli_backend: CliBackend::default(),
         }
     }
 
@@ -112,6 +161,7 @@ impl PairConfig {
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
+            cli_backend: CliBackend::default(),
         }
     }
 
@@ -136,7 +186,14 @@ impl PairConfig {
             github_token: github_token.into(),
             max_resets: 10,
             watchdog_timeout_secs: 1200,
+            cli_backend: CliBackend::default(),
         }
+    }
+
+    /// Set the CLI backend for this pair.
+    pub fn with_cli_backend(mut self, backend: CliBackend) -> Self {
+        self.cli_backend = backend;
+        self
     }
 }
 

@@ -5,11 +5,15 @@ This guide explains how to set up your environment, run the project in different
 ## 🛠️ Prerequisites
 
 1. **Rust**: [Install Rust](https://rustup.rs/) (latest stable).
-2. **Node.js**: Required for Claude Code CLI and MCP servers (v18+).
+2. **Node.js**: Required for CLI backends and MCP servers (v18+).
 3. **Python 3**: Required for running mock servers.
-4. **Claude Code CLI** (Required for Forge workers):
-   The FORGE agent spawns Claude Code processes to implement code. Without this binary,
-   Forge workers will fail with `Failed to spawn FORGE process`.
+4. **CLI Backend** (Required for Forge workers):
+   
+   The orchestration system supports multiple CLI backends for agent execution. You can use either Claude Code CLI (default) or OpenAI Codex CLI.
+
+   ### Option A: Claude Code CLI (Default)
+
+   The FORGE agent spawns Claude Code processes to implement code. Without this binary, Forge workers will fail with `Failed to spawn FORGE process`.
 
    ```bash
    # Install Claude Code CLI globally
@@ -31,10 +35,60 @@ This guide explains how to set up your environment, run the project in different
    CLAUDE_PATH=/home/user/.nvm/versions/node/v24.14.1/bin/claude
    ```
 
+   ### Option B: OpenAI Codex CLI (Alternative)
+
+   You can also use OpenAI's Codex CLI as an alternative backend. This is useful if you prefer OpenAI models or have existing OpenAI infrastructure.
+
+   ```bash
+   # Install Codex CLI globally
+   npm install -g @openai/codex
+
+   # Set your OpenAI API key
+   export OPENAI_API_KEY=your-openai-api-key
+
+   # Verify installation
+   codex --version
+   ```
+
+   Then set `CODEX_PATH` in your `.env`:
+   ```bash
+   # Find the path
+   which codex
+
+   # Set it in .env (example output)
+   CODEX_PATH=/home/user/.nvm/versions/node/v24.14.1/bin/codex
+   ```
+
+   ### Switching CLI Backends
+
+   You can configure which CLI backend to use at three levels:
+
+   1. **Global default** (in `.env`):
+      ```env
+      DEFAULT_CLI_BACKEND=codex  # or "claude"
+      ```
+
+   2. **Per-agent override** (in `orchestration/agent/registry.json`):
+      ```json
+      {
+        "default_cli": "claude",
+        "team": [
+          { "id": "nexus", "cli": "codex", ... },
+          { "id": "forge", "cli": "claude", ... }
+        ]
+      }
+      ```
+
+   3. **Environment variable override**:
+      ```env
+      # Force all agents to use Codex
+      DEFAULT_CLI_BACKEND=codex
+      ```
+
    **Troubleshooting**: If you see `Failed to spawn FORGE process` in logs, the most
-   common cause is that the `claude` binary cannot be found. Verify:
-   - `claude --version` works from the same terminal you run `cargo` from
-   - `CLAUDE_PATH` in `.env` points to an existing, executable binary
+   common cause is that the CLI binary cannot be found. Verify:
+   - `<cli> --version` works from the same terminal you run `cargo` from
+   - `<CLI>_PATH` in `.env` points to an existing, executable binary
    - The binary has execute permissions (`chmod +x <path>` on Linux/macOS)
 
 ## ⚙️ Environment Setup

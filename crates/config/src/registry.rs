@@ -7,11 +7,42 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// CLI backend type for agent execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CliBackend {
+    /// Claude Code CLI (default)
+    #[default]
+    Claude,
+    /// OpenAI Codex CLI
+    Codex,
+}
+
+impl CliBackend {
+    /// Parse from string, with fallback to default.
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "codex" => CliBackend::Codex,
+            "claude" => CliBackend::Claude,
+            _ => CliBackend::Claude, // Default fallback
+        }
+    }
+
+    /// Convert to string for display.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CliBackend::Claude => "claude",
+            CliBackend::Codex => "codex",
+        }
+    }
+}
+
 /// A single agent entry from registry.json.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RegistryEntry {
     pub id: String,
-    pub cli: String, // "claude" | "gemini" | "codex"
+    #[serde(default)]
+    pub cli: String, // "claude" | "codex" - defaults to registry's default_cli or "claude"
     pub active: bool,
     pub instances: u32, // registry.json is sole source — .agent.md has no instances field
     #[serde(default)]
@@ -23,7 +54,26 @@ pub struct RegistryEntry {
 /// The full registry — a thin wrapper around the team list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registry {
+    /// Default CLI backend for agents without explicit cli field
+    #[serde(default = "default_cli")]
+    pub default_cli: String,
     pub team: Vec<RegistryEntry>,
+}
+
+fn default_cli() -> String {
+    "claude".to_string()
+}
+
+impl RegistryEntry {
+    /// Get the CLI backend for this agent, respecting the registry default.
+    pub fn cli_backend(&self, default: &str) -> CliBackend {
+        let cli = if self.cli.is_empty() {
+            default
+        } else {
+            &self.cli
+        };
+        CliBackend::from_str(cli)
+    }
 }
 
 impl Registry {
@@ -71,12 +121,26 @@ mod tests {
 
     fn sample_registry_json() -> &'static str {
         r#"{
+          "default_cli": "claude",
           "team": [
             { "id": "nexus",    "cli": "claude", "active": true,  "instances": 1, "model_backend": "anthropic/claude-sonnet-4-5", "routing_key": "nexus-key" },
             { "id": "forge",    "cli": "claude", "active": true,  "instances": 2, "model_backend": "anthropic/claude-sonnet-4-5", "routing_key": "forge-key" },
             { "id": "sentinel", "cli": "claude", "active": true,  "instances": 1, "model_backend": "gemini/gemini-2.5-pro",      "routing_key": "sentinel-key" },
             { "id": "vessel",   "cli": "claude", "active": true,  "instances": 1, "model_backend": "groq/llama-3.3-70b-versatile", "routing_key": "vessel-key" },
             { "id": "lore",     "cli": "claude", "active": false, "instances": 1, "model_backend": "openai/gpt-4o-mini",       "routing_key": "lore-key" }
+          ]
+        }"#
+    }
+
+    fn sample_registry_with_codex() -> &'static str {
+        r#"{
+          "default_cli": "claude",
+          "team": [
+            { "id": "nexus",    "cli": "codex",  "active": true,  "instances": 1, "model_backend": "openai/gpt-4o", "routing_key": "nexus-key" },
+            { "id": "forge",    "cli": "codex",  "active": true,  "instances": 2, "model_backend": "openai/gpt-4o", "routing_key": "forge-key" },
+            { "id": "sentinel", "cli": "claude", "active": true,  "instances": 1, "model_backend": "anthropic/claude-sonnet-4-5", "routing_key": "sentinel-key" },
+            { "id": "vessel",   "cli": "claude", "active": true,  "instances": 1, "model_backend": "anthropic/claude-sonnet-4-5", "routing_key": "vessel-key" },
+            { "id": "lore",     "cli": "codex",  "active": true,  "instances": 1, "model_backend": "openai/gpt-4o", "routing_key": "lore-key" }
           ]
         }"#
     }
@@ -123,5 +187,69 @@ mod tests {
         let reg = Registry::load(f.path()).unwrap();
         let nexus = reg.get("nexus").unwrap();
         assert_eq!(nexus.instances, 1);
+    }
+
+    #[test]
+    fn test_default_cli_backend() {
+        let f = write_temp(sample_registry_json());
+        let reg = Registry::load(f.path()).unwrap();
+        assert_eq!(reg.default_cli, "claude");
+    }
+
+    #[test]
+    fn test_cli_backend_from_str() {
+        assert_eq!(CliBackend::from_str("claude"), CliBackend::Claude);
+        assert_eq!(CliBackend::from_str("CODEX"), CliBackend::Codex);
+        assert_eq!(CliBackend::from_str("Codex"), CliBackend::Codex);
+        assert_eq!(CliBackend::from_str("unknown"), CliBackend::Claude); // fallback
+    }
+
+    #[test]
+    fn test_cli_backend_as_str() {
+        assert_eq!(CliBackend::Claude.as_str(), "claude");
+        assert_eq!(CliBackend::Codex.as_str(), "codex");
+    }
+
+    #[test]
+    fn test_registry_with_mixed_cli_backends() {
+        let f = write_temp(sample_registry_with_codex());
+        let reg = Registry::load(f.path()).unwrap();
+        
+        // Check default_cli
+        assert_eq!(reg.default_cli, "claude");
+        
+        // Check individual agents
+        let nexus = reg.get("nexus").unwrap();
+        assert_eq!(nexus.cli_backend(&reg.default_cli), CliBackend::Codex);
+        
+        let forge = reg.get("forge").unwrap();
+        assert_eq!(forge.cli_backend(&reg.default_cli), CliBackend::Codex);
+        
+        let sentinel = reg.get("sentinel").unwrap();
+        assert_eq!(sentinel.cli_backend(&reg.default_cli), CliBackend::Claude);
+        
+        let lore = reg.get("lore").unwrap();
+        assert_eq!(lore.cli_backend(&reg.default_cli), CliBackend::Codex);
+    }
+
+    #[test]
+    fn test_agent_cli_respects_default() {
+        let json = r#"{
+          "default_cli": "codex",
+          "team": [
+            { "id": "nexus", "cli": "", "active": true, "instances": 1 },
+            { "id": "forge", "cli": "claude", "active": true, "instances": 1 }
+          ]
+        }"#;
+        let f = write_temp(json);
+        let reg = Registry::load(f.path()).unwrap();
+        
+        // nexus has empty cli, should use default
+        let nexus = reg.get("nexus").unwrap();
+        assert_eq!(nexus.cli_backend(&reg.default_cli), CliBackend::Codex);
+        
+        // forge has explicit claude
+        let forge = reg.get("forge").unwrap();
+        assert_eq!(forge.cli_backend(&reg.default_cli), CliBackend::Claude);
     }
 }
