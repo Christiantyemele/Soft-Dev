@@ -94,7 +94,19 @@ impl McpSession {
 
     /// Spawn the GitHub MCP server with an explicit token.
     /// Respects GITHUB_MCP_TYPE env var: "docker" uses Docker, anything else uses hosted mcp-proxy.
+    /// If GITHUB_MCP_CMD is set, uses that instead (for testing/mocking).
     pub async fn connect_hosted_with_token(pat: &str) -> Result<Self> {
+        // 1. Check for full command override (for testing/mocking)
+        if let Ok(cmd_str) = std::env::var("GITHUB_MCP_CMD") {
+            let cmd: Vec<&str> = cmd_str.split_whitespace().collect();
+            if !cmd.is_empty() {
+                info!(cmd = ?cmd, "Using GITHUB_MCP_CMD override");
+                // Set the token in env for the mock to potentially use
+                std::env::set_var("GITHUB_PERSONAL_ACCESS_TOKEN", pat);
+                return Self::connect(&cmd).await;
+            }
+        }
+
         let mcp_type = std::env::var("GITHUB_MCP_TYPE").unwrap_or_else(|_| "hosted".to_string());
         match mcp_type.as_str() {
             "docker" => {
