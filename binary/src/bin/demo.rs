@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
     let forge = Arc::new(ForgeNode::new(
         ".",
         "orchestration/agent/agents/forge.agent.md",
+        &std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN").unwrap_or_default(),
     ));
 
     // 5. Build Flow

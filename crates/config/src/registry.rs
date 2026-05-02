@@ -18,6 +18,8 @@ pub struct RegistryEntry {
     pub model_backend: Option<String>, // e.g. "anthropic/claude-sonnet-4-5", "gemini/gemini-2.5-pro"
     #[serde(default)]
     pub routing_key: Option<String>, // LiteLLM proxy routing key, e.g. "forge-key"
+    #[serde(default)]
+    pub github_token_env: Option<String>, // Per-agent GitHub token env var, e.g. "AGENT_NEXUS_GITHUB_TOKEN"
 }
 
 /// The full registry — a thin wrapper around the team list.
@@ -47,6 +49,21 @@ impl Registry {
         self.team.iter().find(|e| e.id == id && e.active)
     }
 
+    /// Normalize agent ID by stripping instance suffix (e.g., "forge-1" -> "forge").
+    /// Returns the base ID if no suffix, or if the ID is exactly in the registry.
+    fn normalize_agent_id<'a>(&self, agent_id: &'a str) -> &'a str {
+        if self.get(agent_id).is_some() {
+            return agent_id;
+        }
+        if let Some(pos) = agent_id.rfind('-') {
+            let base = &agent_id[..pos];
+            if self.get(base).is_some() {
+                return base;
+            }
+        }
+        agent_id
+    }
+
     /// Total active instance count across all agents.
     pub fn total_instances(&self) -> u32 {
         self.active_agents().map(|e| e.instances).sum()
@@ -60,6 +77,47 @@ impl Registry {
                 .map(|i| format!("forge-{}", i))
                 .collect(),
         }
+    }
+
+    /// All worker slot names including non-forge agents like "lore".
+    /// Returns slots for all active agents with instances > 0.
+    pub fn all_worker_slots(&self) -> Vec<String> {
+        let mut slots = Vec::new();
+        for entry in self.active_agents() {
+            if entry.instances > 0 {
+                if entry.id == "forge" {
+                    for i in 1..=entry.instances {
+                        slots.push(format!("forge-{}", i));
+                    }
+                } else if entry.instances == 1 {
+                    slots.push(entry.id.clone());
+                } else {
+                    for i in 1..=entry.instances {
+                        slots.push(format!("{}-{}", entry.id, i));
+                    }
+                }
+            }
+        }
+        slots
+    }
+
+    /// Resolve GitHub token for a given agent.
+    /// If the agent has `github_token_env` set, reads from that env var.
+    /// Falls back to `GITHUB_PERSONAL_ACCESS_TOKEN` for backward compatibility.
+    /// Handles instance IDs (e.g., "forge-1") by stripping suffix to find base agent.
+    pub fn resolve_github_token(&self, agent_id: &str) -> Result<String> {
+        let base_id = self.normalize_agent_id(agent_id);
+        let token = match self.get(base_id) {
+            Some(entry) => match &entry.github_token_env {
+                Some(env_var) => std::env::var(env_var)
+                    .with_context(|| format!("{} not set for agent {}", env_var, agent_id))?,
+                None => std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
+                    .context("GITHUB_PERSONAL_ACCESS_TOKEN not set (fallback for agent without github_token_env)")?,
+            },
+            None => std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN")
+                .context("GITHUB_PERSONAL_ACCESS_TOKEN not set (agent not found in registry)")?,
+        };
+        Ok(token)
     }
 }
 
@@ -123,5 +181,16 @@ mod tests {
         let reg = Registry::load(f.path()).unwrap();
         let nexus = reg.get("nexus").unwrap();
         assert_eq!(nexus.instances, 1);
+    }
+
+    #[test]
+    fn test_normalize_agent_id() {
+        let f = write_temp(sample_registry_json());
+        let reg = Registry::load(f.path()).unwrap();
+        assert_eq!(reg.normalize_agent_id("forge"), "forge");
+        assert_eq!(reg.normalize_agent_id("forge-1"), "forge");
+        assert_eq!(reg.normalize_agent_id("forge-2"), "forge");
+        assert_eq!(reg.normalize_agent_id("nexus"), "nexus");
+        assert_eq!(reg.normalize_agent_id("unknown"), "unknown");
     }
 }
