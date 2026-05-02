@@ -82,7 +82,10 @@ impl LoreConfig {
             .join("lore.agent.md");
 
         // Try workspace_root first, then current_dir as fallback
-        let registry_path = if workspace_root.join("orchestration/agent/registry.json").exists() {
+        let registry_path = if workspace_root
+            .join("orchestration/agent/registry.json")
+            .exists()
+        {
             Some(workspace_root.join("orchestration/agent/registry.json"))
         } else {
             std::env::current_dir()
@@ -104,7 +107,9 @@ impl LoreConfig {
                 }
             }
             _ => {
-                tracing::warn!("LORE: registry.json not found, falling back to GITHUB_PERSONAL_ACCESS_TOKEN");
+                tracing::warn!(
+                    "LORE: registry.json not found, falling back to GITHUB_PERSONAL_ACCESS_TOKEN"
+                );
                 std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN").unwrap_or_default()
             }
         };

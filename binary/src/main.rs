@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::nodes::{ForgeNode, LoreNode, NexusNode, VesselNode, VesselConfig};
+use crate::nodes::{ForgeNode, LoreNode, NexusNode, VesselConfig, VesselNode};
 use crate::state::{
     Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CI_FIX_NEEDED,
     ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_DOCS_COMPLETE,
@@ -110,10 +110,12 @@ async fn main() -> Result<()> {
         orchestrator_dir.join("orchestration/agent/agents/forge.agent.md"),
         registry_path.clone(),
     ));
-    let vessel = Arc::new(VesselNode::new(VesselConfig::from_registry(&registry_path).unwrap_or_else(|e| {
-        warn!(error = %e, "Failed to load vessel config from registry, using fallback");
-        VesselConfig::from_env()
-    })));
+    let vessel = Arc::new(VesselNode::new(
+        VesselConfig::from_registry(&registry_path).unwrap_or_else(|e| {
+            warn!(error = %e, "Failed to load vessel config from registry, using fallback");
+            VesselConfig::from_env()
+        }),
+    ));
     let lore = Arc::new(LoreNode::new_with_registry(
         &workspace_dir,
         orchestrator_dir.join("orchestration/agent/agents/lore.agent.md"),

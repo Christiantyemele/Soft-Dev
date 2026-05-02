@@ -63,7 +63,11 @@ pub struct ForgeNode {
 }
 
 impl ForgeNode {
-    pub fn new(workspace_root: impl Into<PathBuf>, persona_path: impl Into<PathBuf>, github_token: &str) -> Self {
+    pub fn new(
+        workspace_root: impl Into<PathBuf>,
+        persona_path: impl Into<PathBuf>,
+        github_token: &str,
+    ) -> Self {
         Self {
             workspace_root: workspace_root.into(),
             persona_path: persona_path.into(),
@@ -1415,12 +1419,7 @@ impl BatchNode for ForgePairNode {
         // Resolve token for this specific worker
         let worker_token = self.resolve_token_for_worker(&worker_id)?;
 
-        let config = PairConfig::new(
-            &worker_id,
-            &ticket_id,
-            &self.workspace_root,
-            &worker_token,
-        );
+        let config = PairConfig::new(&worker_id, &ticket_id, &self.workspace_root, &worker_token);
 
         let mut pair = ForgeSentinelPair::new(config);
         let outcome = pair

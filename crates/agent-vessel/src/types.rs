@@ -94,10 +94,7 @@ pub enum VesselOutcome {
         conflicted_files: Vec<String>,
     },
     /// Docs PR with conflicts — closed to allow lore to regenerate
-    DocsPrClosed {
-        pr_number: u64,
-        reason: String,
-    },
+    DocsPrClosed { pr_number: u64, reason: String },
 }
 
 impl VesselOutcome {

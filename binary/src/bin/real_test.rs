@@ -31,7 +31,8 @@ async fn main() -> Result<()> {
         .join("agent")
         .join("registry.json");
     let registry = config::Registry::load(&registry_path)?;
-    let github_token = registry.resolve_github_token("forge")
+    let github_token = registry
+        .resolve_github_token("forge")
         .expect("AGENT_FORGE_GITHUB_TOKEN or GITHUB_PERSONAL_ACCESS_TOKEN must be set");
     let repo = std::env::var("GITHUB_REPOSITORY")
         .expect("GITHUB_REPOSITORY must be set (e.g. owner/repo)");

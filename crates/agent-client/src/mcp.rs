@@ -118,7 +118,8 @@ impl McpSession {
                     .context("Failed to spawn hosted MCP npx bridge")?;
 
                 let stdin = child.stdin.take().context("Failed to open MCP stdin")?;
-                let stdout = BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
+                let stdout =
+                    BufReader::new(child.stdout.take().context("Failed to open MCP stdout")?);
 
                 let mut session = Self {
                     _child: child,
