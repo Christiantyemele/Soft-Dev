@@ -28,7 +28,7 @@ use crate::{CiPoller, PrMerger, VesselNotifier};
 /// 2. exec: Poll CI, detect conflicts, resolve if possible, merge if green, return outcomes
 /// 3. post: Emit events, update tickets, return routing action
 pub struct VesselNode {
-    _config: VesselConfig,
+    config: VesselConfig,
     client: github::GithubRestClient,
     poller: CiPoller,
     merger: PrMerger,
@@ -60,7 +60,7 @@ impl VesselNode {
             poller: CiPoller::new(config.ci_poll.clone(), client.clone()),
             merger: PrMerger::new(client.clone(), config.merge_method),
             client,
-            _config: config,
+            config,
         }
     }
 
@@ -71,10 +71,22 @@ impl VesselNode {
 
         let config = match registry_path {
             Some(path) if path.exists() => {
-                VesselConfig::from_registry(&path).unwrap_or_else(|_| VesselConfig::from_env())
+                info!(registry_path = %path.display(), "VESSEL loading config from registry");
+                VesselConfig::from_registry(&path).unwrap_or_else(|e| {
+                    warn!(error = %e, "VESSEL failed to load from registry, falling back to GITHUB_PERSONAL_ACCESS_TOKEN");
+                    VesselConfig::from_env()
+                })
             }
-            _ => VesselConfig::from_env(),
+            Some(path) => {
+                warn!(path = %path.display(), "VESSEL registry path does not exist, using fallback token");
+                VesselConfig::from_env()
+            }
+            _ => {
+                warn!("VESSEL could not determine registry path, using fallback token");
+                VesselConfig::from_env()
+            }
         };
+        info!(token_prefix = &config.github_token[..20.min(config.github_token.len())], "VESSEL token loaded");
         Self::new(config)
     }
 
@@ -173,7 +185,26 @@ impl Node for VesselNode {
                 }
             };
 
-            let outcome = if !has_ci_workflows {
+            // Check if PR has active check runs, even if ci_readiness says Missing.
+            // PR #19 (CI setup) adds CI that runs on itself, so we must check.
+            // If check_suites returns anything other than Success, checks exist.
+            let pr_has_ci = if !has_ci_workflows {
+                match self.client.get_check_suites_status(owner, repo, &pr_info.head_sha).await {
+                    Ok(CiStatus::Success) => {
+                        // Might be truly no checks, or all passed - verify
+                        self.has_any_check_runs(owner, repo, &pr_info.head_sha).await.unwrap_or(false)
+                    }
+                    Ok(_) => {
+                        info!(pr_number, "PR has check runs despite ci_readiness=Missing — processing with CI");
+                        true
+                    }
+                    Err(_) => false,
+                }
+            } else {
+                has_ci_workflows
+            };
+
+            let outcome = if !pr_has_ci {
                 warn!(
                     pr_number,
                     "No CI workflows configured — treating as success and alerting NEXUS"
@@ -709,6 +740,35 @@ impl Node for VesselNode {
 }
 
 impl VesselNode {
+    /// Check if any check runs exist for a commit by querying check-runs API.
+    /// Returns true if total_count > 0.
+    async fn has_any_check_runs(&self, owner: &str, repo: &str, sha: &str) -> Result<bool> {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/commits/{}/check-runs?per_page=1",
+            owner, repo, sha
+        );
+
+        let client = reqwest::Client::builder()
+            .user_agent("AgentFlow-VESSEL/0.1")
+            .build()?;
+
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.config.github_token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Ok(false);
+        }
+
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let total = body["total_count"].as_u64().unwrap_or(0);
+        Ok(total > 0)
+    }
+
     /// Process a single PR: poll CI → detect conflicts → resolve if possible → merge if green → return outcome.
     async fn process_single_pr(
         &self,
@@ -716,8 +776,13 @@ impl VesselNode {
         repo: &str,
         pr_info: PrInfo,
     ) -> Result<VesselOutcome> {
-        let ticket_id = pr_info.ticket_id.clone();
         let pr_number = pr_info.number;
+
+        let ticket_id = if Self::is_docs_pr(&pr_info) {
+            Some("T-DOCS".to_string())
+        } else {
+            pr_info.ticket_id.clone()
+        };
 
         info!(pr_number, ticket_id = ?ticket_id, "Processing PR");
 
@@ -1157,8 +1222,13 @@ impl VesselNode {
         repo: &str,
         pr_info: PrInfo,
     ) -> Result<VesselOutcome> {
-        let ticket_id = pr_info.ticket_id.clone();
         let pr_number = pr_info.number;
+
+        let ticket_id = if Self::is_docs_pr(&pr_info) {
+            Some("T-DOCS".to_string())
+        } else {
+            pr_info.ticket_id.clone()
+        };
 
         info!(pr_number, ticket_id = ?ticket_id, "Merging PR without CI — no workflows configured");
 

@@ -59,6 +59,7 @@ pub struct ForgeNode {
     pub workspace_root: PathBuf,
     pub persona_path: PathBuf,
     pub github_token: String,
+    pub registry_path: Option<PathBuf>,
 }
 
 impl ForgeNode {
@@ -67,6 +68,31 @@ impl ForgeNode {
             workspace_root: workspace_root.into(),
             persona_path: persona_path.into(),
             github_token: github_token.to_string(),
+            registry_path: None,
+        }
+    }
+
+    /// Create with registry support for per-worker token resolution.
+    pub fn new_with_registry(
+        workspace_root: impl Into<PathBuf>,
+        persona_path: impl Into<PathBuf>,
+        registry_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            workspace_root: workspace_root.into(),
+            persona_path: persona_path.into(),
+            github_token: String::new(),
+            registry_path: Some(registry_path.into()),
+        }
+    }
+
+    /// Resolve GitHub token for a specific worker.
+    fn resolve_token_for_worker(&self, worker_id: &str) -> Result<String> {
+        if let Some(registry_path) = &self.registry_path {
+            let registry = config::Registry::load(registry_path)?;
+            registry.resolve_github_token(worker_id)
+        } else {
+            Ok(self.github_token.clone())
         }
     }
 
@@ -127,9 +153,12 @@ impl BatchNode for ForgeNode {
         // Create worktree manager
         let worktree_mgr = WorktreeManager::new(&self.workspace_root);
 
+        // Resolve token for this specific worker
+        let worker_token = self.resolve_token_for_worker(&worker_id)?;
+
         // Create worktree for this worker
         let setup_result = worktree_mgr
-            .create_worktree(&worker_id, &ticket_id, &self.github_token)
+            .create_worktree(&worker_id, &ticket_id, &worker_token)
             .await
             .map_err(|e| anyhow!("Failed to create worktree: {:#}", e))?;
         let worktree_path = setup_result.path;
@@ -443,6 +472,7 @@ impl BatchNode for ForgeNode {
 pub struct ForgePairNode {
     pub workspace_root: PathBuf,
     pub github_token: String,
+    pub registry_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,6 +490,29 @@ impl ForgePairNode {
         Self {
             workspace_root: workspace_root.into(),
             github_token: github_token.into(),
+            registry_path: None,
+        }
+    }
+
+    /// Create with registry support for per-worker token resolution.
+    pub fn new_with_registry(
+        workspace_root: impl Into<PathBuf>,
+        registry_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            workspace_root: workspace_root.into(),
+            github_token: String::new(),
+            registry_path: Some(registry_path.into()),
+        }
+    }
+
+    /// Resolve GitHub token for a specific worker.
+    fn resolve_token_for_worker(&self, worker_id: &str) -> Result<String> {
+        if let Some(registry_path) = &self.registry_path {
+            let registry = config::Registry::load(registry_path)?;
+            registry.resolve_github_token(worker_id)
+        } else {
+            Ok(self.github_token.clone())
         }
     }
 
@@ -536,6 +589,15 @@ impl ForgePairNode {
     }
 
     async fn fetch_issue(&self, owner: &str, repo: &str, number: u64) -> Result<GithubIssue> {
+        // Use registry token if available, otherwise use the fallback token
+        let token = if let Some(registry_path) = &self.registry_path {
+            config::Registry::load(registry_path)?
+                .resolve_github_token("forge")
+                .unwrap_or_else(|_| self.github_token.clone())
+        } else {
+            self.github_token.clone()
+        };
+
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("agentflow/forge"));
         headers.insert(
@@ -544,7 +606,7 @@ impl ForgePairNode {
         );
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.github_token))?,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
         );
 
         let client = reqwest::Client::builder()
@@ -619,13 +681,16 @@ impl ForgePairNode {
 
         let branch_name = WorktreeManager::branch_name(worker_id, ticket_id);
 
+        // Resolve token for this worker
+        let worker_token = self.resolve_token_for_worker(worker_id)?;
+
         let client = reqwest::Client::new();
         let resp = client
             .get(format!(
                 "https://api.github.com/repos/{}/{}/pulls?head={}:{}&state=open",
                 owner, repo_name, owner, branch_name
             ))
-            .header("Authorization", format!("Bearer {}", self.github_token))
+            .header("Authorization", format!("Bearer {}", worker_token))
             .header("User-Agent", "agentflow-forge")
             .header("Accept", "application/vnd.github+json")
             .send()
@@ -665,6 +730,9 @@ impl ForgePairNode {
 
         let worktree_path = self.workspace_root.join("worktrees").join(worker_id);
         let branch_name = WorktreeManager::branch_name(worker_id, ticket_id);
+
+        // Resolve token for this worker
+        let worker_token = self.resolve_token_for_worker(worker_id)?;
 
         if !worktree_path.exists() {
             return Err(anyhow!(
@@ -832,7 +900,7 @@ impl ForgePairNode {
         );
         let list_resp = client
             .get(&existing_pr_url)
-            .header("Authorization", format!("Bearer {}", self.github_token))
+            .header("Authorization", format!("Bearer {}", worker_token))
             .header("User-Agent", "agentflow-forge")
             .header("Accept", "application/vnd.github+json")
             .send()
@@ -881,7 +949,7 @@ impl ForgePairNode {
                 "https://api.github.com/repos/{}/{}/pulls",
                 owner, repo_name
             ))
-            .header("Authorization", format!("Bearer {}", self.github_token))
+            .header("Authorization", format!("Bearer {}", worker_token))
             .header("User-Agent", "agentflow-forge")
             .header("Accept", "application/vnd.github+json")
             .json(&pr_body_json)
@@ -897,7 +965,7 @@ impl ForgePairNode {
                         "https://api.github.com/repos/{}/{}/pulls?head={}:{}&state=open",
                         owner, repo_name, owner, branch_name
                     ))
-                    .header("Authorization", format!("Bearer {}", self.github_token))
+                    .header("Authorization", format!("Bearer {}", worker_token))
                     .header("User-Agent", "agentflow-forge")
                     .header("Accept", "application/vnd.github+json")
                     .send()
@@ -1344,11 +1412,14 @@ impl BatchNode for ForgePairNode {
 
         let ticket = self.build_ticket(&ticket_id, issue_url.as_deref()).await;
 
+        // Resolve token for this specific worker
+        let worker_token = self.resolve_token_for_worker(&worker_id)?;
+
         let config = PairConfig::new(
             &worker_id,
             &ticket_id,
             &self.workspace_root,
-            &self.github_token,
+            &worker_token,
         );
 
         let mut pair = ForgeSentinelPair::new(config);

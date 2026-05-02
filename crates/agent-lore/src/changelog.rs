@@ -26,6 +26,15 @@ impl ChangelogManager {
 
         let entry_line = self.format_entry(entry, pr_number);
 
+        if content.contains(&entry_line) {
+            info!(
+                category = category.as_str(),
+                pr_number,
+                "Changelog entry already exists — skipping duplicate"
+            );
+            return Ok(());
+        }
+
         let updated = self.insert_entry(&content, category, &entry_line)?;
 
         tokio::fs::write(&self.changelog_path, &updated).await?;

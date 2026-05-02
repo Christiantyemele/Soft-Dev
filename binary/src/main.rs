@@ -6,9 +6,9 @@ use anyhow::Result;
 use pocketflow_core::{Action, Flow, SharedStore};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::nodes::{ForgeNode, LoreNode, NexusNode, VesselNode};
+use crate::nodes::{ForgeNode, LoreNode, NexusNode, VesselNode, VesselConfig};
 use crate::state::{
     Ticket, TicketStatus, WorkerSlot, WorkerStatus, ACTION_CI_FIX_NEEDED,
     ACTION_CONFLICTS_DETECTED, ACTION_DEPLOYED, ACTION_DEPLOY_FAILED, ACTION_DOCS_COMPLETE,
@@ -100,16 +100,20 @@ async fn main() -> Result<()> {
 
     // 4. Build Flow - use orchestration/agent directory for personas
     let orchestrator_dir = std::env::current_dir()?;
+    let registry_path = orchestrator_dir.join("orchestration/agent/registry.json");
     let nexus = Arc::new(NexusNode::new(
         orchestrator_dir.join("orchestration/agent/agents/nexus.agent.md"),
-        orchestrator_dir.join("orchestration/agent/registry.json"),
+        registry_path.clone(),
     ));
-    let forge = Arc::new(ForgeNode::new(
+    let forge = Arc::new(ForgeNode::new_with_registry(
         &workspace_dir,
         orchestrator_dir.join("orchestration/agent/agents/forge.agent.md"),
-        &github_token.unwrap_or_default(),
+        registry_path.clone(),
     ));
-    let vessel = Arc::new(VesselNode::from_env());
+    let vessel = Arc::new(VesselNode::new(VesselConfig::from_registry(&registry_path).unwrap_or_else(|e| {
+        warn!(error = %e, "Failed to load vessel config from registry, using fallback");
+        VesselConfig::from_env()
+    })));
     let lore = Arc::new(LoreNode::new_with_registry(
         &workspace_dir,
         orchestrator_dir.join("orchestration/agent/agents/lore.agent.md"),
