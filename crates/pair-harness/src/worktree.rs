@@ -24,6 +24,127 @@ impl WorktreeManager {
         }
     }
 
+    /// Configure git user identity in a worktree using the GitHub PAT.
+    /// This ensures commits are authored by the PAT identity, not the local git config.
+    pub async fn configure_git_identity(
+        &self,
+        worktree_path: &Path,
+        github_token: &str,
+    ) -> Result<()> {
+        // Use the token to identify the user via GitHub API
+        let client = reqwest::Client::new();
+        let resp = client
+            .get("https://api.github.com/user")
+            .header("Authorization", format!("Bearer {}", github_token))
+            .header("User-Agent", "AgentFlow-Worktree/0.1")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("Failed to fetch GitHub user info")?;
+
+        let (name, email) = if resp.status().is_success() {
+            let user: serde_json::Value = resp
+                .json()
+                .await
+                .context("Failed to parse GitHub user response")?;
+            let name = user["name"]
+                .as_str()
+                .unwrap_or_else(|| user["login"].as_str().unwrap_or("AgentFlow"))
+                .to_string();
+            let email = user["email"]
+                .as_str()
+                .map(|e| e.to_string())
+                .or_else(|| {
+                    user["login"]
+                        .as_str()
+                        .map(|login| format!("{}@users.noreply.github.com", login))
+                })
+                .unwrap_or_else(|| "agentflow@github.com".to_string());
+            (name, email)
+        } else {
+            warn!(
+                "Failed to fetch GitHub user info (status {}), using generic identity",
+                resp.status()
+            );
+            ("AgentFlow".to_string(), "agentflow@github.com".to_string())
+        };
+
+        self.run_git_in_worktree(worktree_path, &["config", "user.name", &name])?;
+        self.run_git_in_worktree(worktree_path, &["config", "user.email", &email])?;
+
+        info!(name, email, path = %worktree_path.display(), "Git identity configured from PAT");
+        Ok(())
+    }
+
+    /// Configure the remote URL with embedded token for push authentication.
+    /// This ensures each worktree uses its own token for git operations.
+    pub fn configure_remote_with_token(
+        &self,
+        worktree_path: &Path,
+        github_token: &str,
+    ) -> Result<()> {
+        let output = Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to get remote URL")?;
+
+        let current_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        let new_url = if let Some(repo_part) = current_url.strip_prefix("https://github.com/") {
+            let repo_part = repo_part.trim_end_matches(".git").trim_end_matches('/');
+            format!(
+                "https://x-access-token:{}@github.com/{}.git",
+                github_token, repo_part
+            )
+        } else if let Some(repo_part) =
+            current_url.strip_prefix("https://x-access-token:@github.com/")
+        {
+            let repo_part = repo_part.trim_end_matches(".git").trim_end_matches('/');
+            format!(
+                "https://x-access-token:{}@github.com/{}.git",
+                github_token, repo_part
+            )
+        } else if current_url.contains("x-access-token:") {
+            let re = regex::Regex::new(r"https://x-access-token:[^@]+@github\.com/(.+)").unwrap();
+            if let Some(caps) = re.captures(&current_url) {
+                let repo_part = caps.get(1).unwrap().as_str();
+                let repo_part = repo_part.trim_end_matches(".git").trim_end_matches('/');
+                format!(
+                    "https://x-access-token:{}@github.com/{}.git",
+                    github_token, repo_part
+                )
+            } else {
+                current_url.clone()
+            }
+        } else {
+            current_url.clone()
+        };
+
+        if new_url != current_url {
+            self.run_git_in_worktree(worktree_path, &["remote", "set-url", "origin", &new_url])?;
+            info!(path = %worktree_path.display(), "Remote URL configured with token");
+        }
+
+        Ok(())
+    }
+
+    fn run_git_in_worktree(&self, worktree_path: &Path, args: &[&str]) -> Result<()> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to run git command in worktree")?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "Git command failed in worktree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a worktree for a pair on a new branch.
     ///
     /// Implements worktree reuse: when a pair gets a new ticket, the existing
@@ -32,14 +153,39 @@ impl WorktreeManager {
     /// # Arguments
     /// * `pair_id` - Pair identifier (e.g., "pair-1", "forge-1")
     /// * `ticket_id` - Ticket identifier (e.g., "T-42")
+    /// * `github_token` - GitHub PAT used to configure git author identity
     ///
     /// # Returns
-    /// Path to the worktree.
-    pub fn create_worktree(&self, pair_id: &str, ticket_id: &str) -> Result<PathBuf> {
+    /// `WorktreeSetupResult` containing the path and any setup warnings.
+    pub async fn create_worktree(
+        &self,
+        pair_id: &str,
+        ticket_id: &str,
+        github_token: &str,
+    ) -> Result<WorktreeSetupResult> {
         let worktree_path = self.worktrees_dir.join(pair_id);
         let branch_name = Self::branch_name(pair_id, ticket_id);
+        let mut warnings = Vec::new();
 
-        info!(pair_id, ticket_id, branch = %branch_name, "Creating/reusing worktree");
+        info!(pair_id, ticket_id, branch = %branch_name, "Creating worktree");
+
+        if let Err(e) = self.run_git_in_main(&["fetch", "origin", "main"]) {
+            warn!(error = %e, "git fetch origin/main failed, continuing");
+            warnings.push(SetupWarning {
+                phase: "fetch_origin_main".to_string(),
+                error: e.to_string(),
+                affected_files: vec![],
+            });
+        }
+        if let Err(e) = self.run_git_in_main(&["merge", "origin/main"]) {
+            warn!(error = %e, "git merge origin/main failed, continuing");
+            let affected_files = self.list_unmerged_files_in_main();
+            warnings.push(SetupWarning {
+                phase: "merge_origin_main".to_string(),
+                error: e.to_string(),
+                affected_files,
+            });
+        }
 
         if worktree_path.exists() {
             if let Ok(current) = self.get_current_branch(&worktree_path) {
@@ -49,7 +195,10 @@ impl WorktreeManager {
                         branch = %branch_name,
                         "Worktree already on correct branch - reusing"
                     );
-                    return Ok(worktree_path);
+                    return Ok(WorktreeSetupResult {
+                        path: worktree_path,
+                        warnings,
+                    });
                 }
                 info!(
                     path = %worktree_path.display(),
@@ -57,7 +206,9 @@ impl WorktreeManager {
                     new_branch = %branch_name,
                     "Reusing existing worktree for new ticket"
                 );
-                return self.reuse_worktree(&worktree_path, &branch_name);
+                return self
+                    .reuse_worktree(&worktree_path, &branch_name, github_token)
+                    .await;
             }
             warn!(path = %worktree_path.display(), "Worktree exists but branch unknown, replacing");
             self.remove_worktree_by_path(&worktree_path, "unknown")?;
@@ -100,6 +251,19 @@ impl WorktreeManager {
             }
         }
 
+        // Configure git identity from the PAT so commits show the PAT owner's identity
+        if let Err(e) = self
+            .configure_git_identity(&worktree_path, github_token)
+            .await
+        {
+            warn!(error = %e, "Failed to configure git identity from PAT, using local git config");
+        }
+
+        // Configure remote URL with the token for push authentication
+        if let Err(e) = self.configure_remote_with_token(&worktree_path, github_token) {
+            warn!(error = %e, "Failed to configure remote URL with token");
+        }
+
         let status = Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&worktree_path)
@@ -107,24 +271,58 @@ impl WorktreeManager {
             .context("Failed to run git status")?;
 
         if !status.stdout.is_empty() {
-            warn!(path = %worktree_path.display(), "Worktree is not clean");
+            let dirty_files = String::from_utf8_lossy(&status.stdout)
+                .lines()
+                .filter_map(|l| l.get(3..).map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            warn!(path = %worktree_path.display(), files = dirty_files.len(), "Worktree is not clean");
+            warnings.push(SetupWarning {
+                phase: "worktree_dirty".to_string(),
+                error: "Worktree has uncommitted changes".to_string(),
+                affected_files: dirty_files,
+            });
         }
 
         info!(path = %worktree_path.display(), branch = %branch_name, "Worktree created successfully");
-        Ok(worktree_path)
+        Ok(WorktreeSetupResult {
+            path: worktree_path,
+            warnings,
+        })
     }
 
     /// Reuse an existing worktree by fetching origin/main and creating a new branch.
-    fn reuse_worktree(&self, worktree_path: &Path, new_branch: &str) -> Result<PathBuf> {
+    async fn reuse_worktree(
+        &self,
+        worktree_path: &Path,
+        new_branch: &str,
+        github_token: &str,
+    ) -> Result<WorktreeSetupResult> {
         self.fetch_and_reset_to_main(worktree_path)?;
         self.create_branch_from_main(worktree_path, new_branch)?;
+
+        // Configure git identity from the PAT
+        if let Err(e) = self
+            .configure_git_identity(worktree_path, github_token)
+            .await
+        {
+            warn!(error = %e, "Failed to configure git identity from PAT, using local git config");
+        }
+
+        // Configure remote URL with the token for push authentication
+        if let Err(e) = self.configure_remote_with_token(worktree_path, github_token) {
+            warn!(error = %e, "Failed to configure remote URL with token");
+        }
 
         info!(
             path = %worktree_path.display(),
             branch = %new_branch,
             "Worktree reused successfully"
         );
-        Ok(worktree_path.to_path_buf())
+        Ok(WorktreeSetupResult {
+            path: worktree_path.to_path_buf(),
+            warnings: Vec::new(),
+        })
     }
 
     /// Fetch origin/main and reset the worktree to it.
@@ -531,6 +729,45 @@ impl WorktreeManager {
         Ok(count)
     }
 
+    fn run_git_in_main(&self, args: &[&str]) -> Result<()> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&self.project_root)
+            .output()
+            .context("Failed to run git command")?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "Git command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn list_unmerged_files_in_main(&self) -> Vec<String> {
+        Command::new("git")
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .current_dir(&self.project_root)
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
     fn prune_stale_worktrees(&self) {
         let _ = Command::new("git")
             .args(["worktree", "prune"])
@@ -640,6 +877,26 @@ pub enum RebaseResult {
     Success,
     /// Rebase has conflicts that need resolution
     Conflict,
+}
+
+/// Result of worktree creation, including any setup warnings.
+#[derive(Debug, Clone)]
+pub struct WorktreeSetupResult {
+    /// Path to the created worktree.
+    pub path: PathBuf,
+    /// Warnings encountered during setup (git fetch/merge errors, dirty state, etc.).
+    pub warnings: Vec<SetupWarning>,
+}
+
+/// A warning encountered during worktree setup.
+#[derive(Debug, Clone)]
+pub struct SetupWarning {
+    /// Phase that produced the warning (e.g., "fetch_origin_main", "merge_origin_main", "worktree_dirty").
+    pub phase: String,
+    /// The error message or git stderr.
+    pub error: String,
+    /// Affected files (unmerged/dirty) if detectable.
+    pub affected_files: Vec<String>,
 }
 
 /// Result of a merge origin/main operation.

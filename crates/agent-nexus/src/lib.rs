@@ -16,6 +16,7 @@ use tracing::{info, warn};
 const NO_WORK_THRESHOLD: u32 = 3;
 const KEY_NO_WORK_COUNT: &str = "_no_work_count";
 const KEY_CI_READINESS: &str = "ci_readiness";
+const MAX_CONFLICT_RESOLUTION_ATTEMPTS: u32 = 3;
 const CI_SETUP_TICKET_ID: &str = "T-CI-001";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,15 +195,20 @@ impl NexusNode {
         }
     }
 
+    fn resolve_github_token(&self) -> Result<String> {
+        let registry = Registry::load(&self.registry_path)?;
+        registry.resolve_github_token("nexus")
+    }
+
     async fn sync_issues(&self, store: &SharedStore, owner: &str, repo_name: &str) -> Result<()> {
         if owner.is_empty() || repo_name.is_empty() {
             return Ok(());
         }
 
-        let token = match std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN") {
+        let token = match self.resolve_github_token() {
             Ok(t) => t,
             Err(_) => {
-                warn!("GITHUB_PERSONAL_ACCESS_TOKEN not set, skipping issue sync");
+                warn!("GitHub token not configured, skipping issue sync");
                 return Ok(());
             }
         };
@@ -251,10 +257,10 @@ impl NexusNode {
             return Ok(());
         }
 
-        let token = match std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN") {
+        let token = match self.resolve_github_token() {
             Ok(t) => t,
             Err(_) => {
-                warn!("GITHUB_PERSONAL_ACCESS_TOKEN not set, skipping PR sync");
+                warn!("GitHub token not configured, skipping PR sync");
                 return Ok(());
             }
         };
@@ -295,6 +301,14 @@ impl NexusNode {
                     }
 
                     if let Some(ticket) = tickets.iter().find(|t| t.id == *tid) {
+                        if matches!(ticket.status, TicketStatus::AwaitingHuman { .. }) {
+                            info!(
+                                pr_number = pr.number,
+                                ticket_id = %tid,
+                                "Skipping re-add of PR for ticket awaiting human intervention"
+                            );
+                            continue;
+                        }
                         if let TicketStatus::Failed { reason, .. } = &ticket.status {
                             if reason.contains("Merge conflicts")
                                 || reason.contains("merge conflict")
@@ -320,6 +334,29 @@ impl NexusNode {
                             );
                             continue;
                         }
+                    }
+                }
+
+                // For PRs without ticket_id, check if they've exceeded conflict
+                // resolution or merge-blocked attempts. This prevents re-adding
+                // PRs that are awaiting human intervention or stuck in a loop.
+                if pr.ticket_id.is_none() {
+                    let conflict_attempts_key = format!("_conflict_attempts_{}", pr.number);
+                    let conflict_attempts: u32 =
+                        store.get_typed(&conflict_attempts_key).await.unwrap_or(0);
+                    let merge_blocked_key = format!("_merge_blocked_{}", pr.number);
+                    let merge_blocked_attempts: u32 =
+                        store.get_typed(&merge_blocked_key).await.unwrap_or(0);
+                    if conflict_attempts >= MAX_CONFLICT_RESOLUTION_ATTEMPTS
+                        || merge_blocked_attempts >= MAX_CONFLICT_RESOLUTION_ATTEMPTS
+                    {
+                        info!(
+                            pr_number = pr.number,
+                            conflict_attempts,
+                            merge_blocked_attempts,
+                            "Skipping re-add of PR that has exceeded conflict/merge-blocked attempts — awaiting human intervention"
+                        );
+                        continue;
                     }
                 }
 
@@ -458,7 +495,7 @@ impl NexusNode {
 
         let mut changed = false;
 
-        for slot_id in registry.forge_slots() {
+        for slot_id in registry.all_worker_slots() {
             if !slots.contains_key(&slot_id) {
                 info!(slot = slot_id, "Adding new worker slot from registry");
                 slots.insert(
@@ -496,10 +533,10 @@ impl NexusNode {
             return CiReadiness::Ready;
         }
 
-        let token = match std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN") {
+        let token = match self.resolve_github_token() {
             Ok(t) => t,
             Err(_) => {
-                warn!("GITHUB_PERSONAL_ACCESS_TOKEN not set, assuming CI is ready");
+                warn!("GitHub token not configured, assuming CI is ready");
                 return CiReadiness::Ready;
             }
         };
@@ -865,12 +902,13 @@ impl Node for NexusNode {
     async fn exec(&self, context: Value) -> Result<Value> {
         info!("Nexus calling AgentRunner for orchestration...");
 
-        let model_backend = Registry::load(&self.registry_path)
-            .ok()
-            .and_then(|reg| reg.get("nexus").map(|e| e.model_backend.clone()))
-            .flatten();
+        let registry = Registry::load(&self.registry_path)?;
+        let model_backend = registry.get("nexus").and_then(|e| e.model_backend.clone());
 
-        let mut runner = AgentRunner::from_env_for_agent(model_backend.as_deref()).await?;
+        let github_token = self.resolve_github_token()?;
+
+        let mut runner =
+            AgentRunner::from_env_with_token(model_backend.as_deref(), &github_token).await?;
         let persona = self.load_persona().await?;
 
         let decision: AgentDecision = runner.run(&persona, context, 10).await?;

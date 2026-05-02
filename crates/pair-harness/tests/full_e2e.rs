@@ -198,15 +198,17 @@ async fn test_worktree_provisioning() {
     let manager = WorktreeManager::new(main_path.clone());
 
     // Create worktree
-    let result = manager.create_worktree("pair-1", "T-42");
+    let result = manager
+        .create_worktree("pair-1", "T-42", "dummy-token")
+        .await;
     match result {
-        Ok(worktree_path) => {
-            assert!(worktree_path.exists());
-            println!("Worktree created at: {:?}", worktree_path);
+        Ok(setup_result) => {
+            assert!(setup_result.path.exists());
+            println!("Worktree created at: {:?}", setup_result.path);
 
             // Verify branch was created and worktree is on it
             let actual_branch = manager
-                .get_current_branch(&worktree_path)
+                .get_current_branch(&setup_result.path)
                 .expect("Failed to get current branch");
             assert_eq!(actual_branch, "forge-pair-1/T-42");
         }

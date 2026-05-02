@@ -58,7 +58,7 @@ async fn test_forge_dangerous_command_suspends() -> Result<()> {
 
     // 3. Run ForgeNode with persona path
     let persona_path = repo_root.join("orchestration/agent/agents/forge.agent.md");
-    let forge = ForgeNode::new(&repo_root, &persona_path);
+    let forge = ForgeNode::new(&repo_root, &persona_path, "dummy-token");
 
     // Prep
     let items = forge.prep_batch(&store).await?;
