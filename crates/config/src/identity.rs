@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use crate::registry::{Registry, RegistryEntry};
@@ -44,19 +45,23 @@ impl AgentRole {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "nexus" => Some(AgentRole::Nexus),
-            "forge" => Some(AgentRole::Forge),
-            "sentinel" => Some(AgentRole::Sentinel),
-            "vessel" => Some(AgentRole::Vessel),
-            "lore" => Some(AgentRole::Lore),
-            _ => None,
-        }
-    }
-
     pub fn all() -> &'static [AgentRole] {
         &[AgentRole::Nexus, AgentRole::Forge, AgentRole::Sentinel, AgentRole::Vessel, AgentRole::Lore]
+    }
+}
+
+impl FromStr for AgentRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "nexus" => Ok(AgentRole::Nexus),
+            "forge" => Ok(AgentRole::Forge),
+            "sentinel" => Ok(AgentRole::Sentinel),
+            "vessel" => Ok(AgentRole::Vessel),
+            "lore" => Ok(AgentRole::Lore),
+            _ => Err(format!("Unknown agent role: {}", s)),
+        }
     }
 }
 
@@ -190,7 +195,7 @@ impl IdentityManager {
     /// Resolve the RegistryEntry for a given agent_id.
     /// Handles both base roles ("forge") and instance slots ("forge-1").
     fn resolve_entry(registry: &Registry, agent_id: &str) -> Result<(RegistryEntry, AgentRole, Option<u32>)> {
-        if let Some(role) = AgentRole::from_str(agent_id) {
+        if let Ok(role) = AgentRole::from_str(agent_id) {
             let entry = registry.get(agent_id)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found in registry or inactive", agent_id))?;
@@ -382,9 +387,9 @@ mod tests {
 
     #[test]
     fn test_agent_role_from_str() {
-        assert_eq!(AgentRole::from_str("nexus"), Some(AgentRole::Nexus));
-        assert_eq!(AgentRole::from_str("forge"), Some(AgentRole::Forge));
-        assert_eq!(AgentRole::from_str("unknown"), None);
+        assert_eq!(AgentRole::from_str("nexus"), Ok(AgentRole::Nexus));
+        assert_eq!(AgentRole::from_str("forge"), Ok(AgentRole::Forge));
+        assert!(AgentRole::from_str("unknown").is_err());
     }
 
     #[test]
