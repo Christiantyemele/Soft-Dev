@@ -5,5 +5,5 @@ pub mod state;
 
 pub use agent::{AgentDef, AgentPermissions};
 pub use identity::{AgentIdentity, AgentRole, IdentityManager};
-pub use registry::{Registry, RegistryEntry};
+pub use registry::{CliBackend, Registry, RegistryEntry};
 pub use state::*;

@@ -1419,7 +1419,26 @@ impl BatchNode for ForgePairNode {
         // Resolve token for this specific worker
         let worker_token = self.resolve_token_for_worker(&worker_id)?;
 
-        let config = PairConfig::new(&worker_id, &ticket_id, &self.workspace_root, &worker_token);
+        // Resolve CLI backend from registry
+        let cli_backend = if let Some(registry_path) = &self.registry_path {
+            let registry = config::Registry::load(registry_path)?;
+            let base_id = worker_id.rfind('-').map(|i| &worker_id[..i]).unwrap_or(&worker_id);
+            registry.get(base_id)
+                .map(|entry| {
+                    let backend = entry.cli_backend(&registry.default_cli);
+                    // Convert config::CliBackend to pair_harness::CliBackend
+                    match backend {
+                        config::CliBackend::Claude => pair_harness::types::CliBackend::Claude,
+                        config::CliBackend::Codex => pair_harness::types::CliBackend::Codex,
+                    }
+                })
+                .unwrap_or_default()
+        } else {
+            pair_harness::types::CliBackend::default()
+        };
+
+        let config = PairConfig::new(&worker_id, &ticket_id, &self.workspace_root, &worker_token)
+            .with_cli_backend(cli_backend);
 
         let mut pair = ForgeSentinelPair::new(config);
         let outcome = pair
