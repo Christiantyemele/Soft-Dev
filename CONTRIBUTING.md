@@ -1,4 +1,6 @@
-# Contributing to Autonomous AI Dev Team
+# Contributing to AgentFlow
+
+> 🌐 Official site: [openflows.dev](https://openflows.dev)
 
 This guide explains how to set up your environment, run the project in different modes, and contribute effectively.
 
@@ -137,7 +139,7 @@ This connects to live GitHub and live LLM providers.
 **If your gateway supports Anthropic protocol** (LiteLLM, native Anthropic API):
 ```bash
 # Just run — no proxy needed
-cargo run -p agent-team --bin real_test
+cargo run -p agent-team --bin agentflow
 ```
 
 **If your gateway only supports OpenAI protocol** (common for third-party gateways):
@@ -146,7 +148,7 @@ cargo run -p agent-team --bin real_test
 ./scripts/start_proxy.sh
 
 # Terminal 2: Run the orchestration
-cargo run -p agent-team --bin real_test
+cargo run -p agent-team --bin agentflow
 ```
 
 The proxy reads `GATEWAY_URL` and `GATEWAY_API_KEY` from `.env` automatically, translates Claude CLI's Anthropic-format requests into OpenAI format, and forwards them to your gateway. See [Local Anthropic Proxy](#local-anthropic-proxy-openai-only-gateways) below for details.
@@ -237,7 +239,7 @@ GATEWAY_API_KEY=your-gateway-api-key
 ./scripts/start_proxy.sh
 
 # Terminal 2: Run orchestration
-cargo run --bin real_test
+cargo run --bin agentflow
 ```
 
 **When your provider adds native Anthropic support**, just change `PROXY_URL` to the gateway directly and remove `GATEWAY_*`:

@@ -81,7 +81,7 @@ nano .env
 **Show**: Terminal running AgentFlow
 
 ```bash
-cargo run --bin real_test
+cargo run --bin agentflow
 ```
 
 **Narration**:
@@ -92,7 +92,7 @@ cargo run --bin real_test
 
 Terminal 1:
 ```bash
-cargo run --bin real_test
+cargo run --bin agentflow
 ```
 
 Terminal 2:

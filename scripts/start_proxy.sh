@@ -16,7 +16,7 @@
 #
 # Usage:
 #   ./scripts/start_proxy.sh
-#   # Then in another terminal: cargo run --bin real_test
+#   # Then in another terminal: cargo run --bin agentflow
 
 set -euo pipefail
 
