@@ -58,6 +58,44 @@ impl WorktreeManager {
         Ok(())
     }
 
+    /// Configure the remote URL with embedded token for push authentication.
+    /// This ensures each worktree uses its own token for git operations.
+    pub fn configure_remote_with_token(&self, worktree_path: &Path, github_token: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to get remote URL")?;
+
+        let current_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        let new_url = if let Some(repo_part) = current_url.strip_prefix("https://github.com/") {
+            let repo_part = repo_part.trim_end_matches(".git").trim_end_matches('/');
+            format!("https://x-access-token:{}@github.com/{}.git", github_token, repo_part)
+        } else if let Some(repo_part) = current_url.strip_prefix("https://x-access-token:@github.com/") {
+            let repo_part = repo_part.trim_end_matches(".git").trim_end_matches('/');
+            format!("https://x-access-token:{}@github.com/{}.git", github_token, repo_part)
+        } else if current_url.contains("x-access-token:") {
+            let re = regex::Regex::new(r"https://x-access-token:[^@]+@github\.com/(.+)").unwrap();
+            if let Some(caps) = re.captures(&current_url) {
+                let repo_part = caps.get(1).unwrap().as_str();
+                let repo_part = repo_part.trim_end_matches(".git").trim_end_matches('/');
+                format!("https://x-access-token:{}@github.com/{}.git", github_token, repo_part)
+            } else {
+                current_url.clone()
+            }
+        } else {
+            current_url.clone()
+        };
+
+        if new_url != current_url {
+            self.run_git_in_worktree(worktree_path, &["remote", "set-url", "origin", &new_url])?;
+            info!(path = %worktree_path.display(), "Remote URL configured with token");
+        }
+
+        Ok(())
+    }
+
     fn run_git_in_worktree(&self, worktree_path: &Path, args: &[&str]) -> Result<()> {
         let output = Command::new("git")
             .args(args)
@@ -178,6 +216,11 @@ impl WorktreeManager {
             warn!(error = %e, "Failed to configure git identity from PAT, using local git config");
         }
 
+        // Configure remote URL with the token for push authentication
+        if let Err(e) = self.configure_remote_with_token(&worktree_path, github_token) {
+            warn!(error = %e, "Failed to configure remote URL with token");
+        }
+
         let status = Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&worktree_path)
@@ -213,6 +256,11 @@ impl WorktreeManager {
         // Configure git identity from the PAT
         if let Err(e) = self.configure_git_identity(worktree_path, github_token).await {
             warn!(error = %e, "Failed to configure git identity from PAT, using local git config");
+        }
+
+        // Configure remote URL with the token for push authentication
+        if let Err(e) = self.configure_remote_with_token(worktree_path, github_token) {
+            warn!(error = %e, "Failed to configure remote URL with token");
         }
 
         info!(

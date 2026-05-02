@@ -128,6 +128,15 @@ impl LoreNode {
         tickets.iter().find(|t| t.id == ticket_id).map(|t| t.body.clone())
     }
 
+    const KEY_LORE_PROCESSED_EVENTS: &str = "lore_processed_events";
+
+    fn is_docs_pr(ticket_id: &str, pr_title: &str) -> bool {
+        ticket_id == "T-DOCS"
+            || ticket_id.starts_with("T-DOCS")
+            || pr_title.starts_with("docs:")
+            || pr_title.starts_with("Documentation Update")
+    }
+
     async fn get_documentation_tasks(&self, store: &SharedStore) -> Vec<LoreTask> {
         let mut tasks = Vec::new();
 
@@ -139,6 +148,15 @@ impl LoreNode {
             }
         }
 
+        let processed: std::collections::HashSet<String> = store
+            .get_typed::<Vec<String>>(Self::KEY_LORE_PROCESSED_EVENTS)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        let mut new_processed = processed.clone();
+
         let events = store.get_events_since(0).await;
         for event in events.iter() {
             if event.event_type == "ticket_merged" {
@@ -146,10 +164,28 @@ impl LoreNode {
                     event.payload["ticket_id"].as_str(),
                     event.payload["pr_number"].as_u64(),
                 ) {
+                    let event_key = format!("ticket_merged:{}:{}", ticket_id, pr_number);
+                    if processed.contains(&event_key) {
+                        debug!(event_key, "Skipping already processed ticket_merged event");
+                        continue;
+                    }
+
                     let pr_title = event.payload["pr_title"]
                         .as_str()
                         .map(String::from)
                         .unwrap_or_else(|| format!("Ticket {}", ticket_id));
+
+                    if Self::is_docs_pr(ticket_id, &pr_title) {
+                        info!(
+                            ticket_id,
+                            pr_number,
+                            pr_title,
+                            "Skipping docs PR in LORE — docs PRs don't need documentation"
+                        );
+                        new_processed.insert(event_key);
+                        continue;
+                    }
+
                     let pr_body = event.payload["pr_body"].as_str().map(String::from);
 
                     let issue_body = self.get_issue_body(store, ticket_id).await;
@@ -215,8 +251,15 @@ impl LoreNode {
                         pr_title: Some(pr_title),
                         pr_body: enriched_body,
                     });
+
+                    new_processed.insert(event_key);
                 }
             }
+        }
+
+        if new_processed.len() > processed.len() {
+            let processed_vec: Vec<String> = new_processed.into_iter().collect();
+            store.set(Self::KEY_LORE_PROCESSED_EVENTS, json!(processed_vec)).await;
         }
 
         tasks
