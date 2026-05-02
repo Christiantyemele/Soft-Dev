@@ -657,7 +657,9 @@ impl GithubRestClient {
         });
 
         let body_bytes = serde_json::to_vec(&request_body)?;
-        let resp = self.send_with_retry(|| self.build_post(&url, &body_bytes)).await?;
+        let resp = self
+            .send_with_retry(|| self.build_post(&url, &body_bytes))
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {

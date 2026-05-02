@@ -86,7 +86,10 @@ impl VesselNode {
                 VesselConfig::from_env()
             }
         };
-        info!(token_prefix = &config.github_token[..20.min(config.github_token.len())], "VESSEL token loaded");
+        info!(
+            token_prefix = &config.github_token[..20.min(config.github_token.len())],
+            "VESSEL token loaded"
+        );
         Self::new(config)
     }
 
@@ -189,13 +192,22 @@ impl Node for VesselNode {
             // PR #19 (CI setup) adds CI that runs on itself, so we must check.
             // If check_suites returns anything other than Success, checks exist.
             let pr_has_ci = if !has_ci_workflows {
-                match self.client.get_check_suites_status(owner, repo, &pr_info.head_sha).await {
+                match self
+                    .client
+                    .get_check_suites_status(owner, repo, &pr_info.head_sha)
+                    .await
+                {
                     Ok(CiStatus::Success) => {
                         // Might be truly no checks, or all passed - verify
-                        self.has_any_check_runs(owner, repo, &pr_info.head_sha).await.unwrap_or(false)
+                        self.has_any_check_runs(owner, repo, &pr_info.head_sha)
+                            .await
+                            .unwrap_or(false)
                     }
                     Ok(_) => {
-                        info!(pr_number, "PR has check runs despite ci_readiness=Missing — processing with CI");
+                        info!(
+                            pr_number,
+                            "PR has check runs despite ci_readiness=Missing — processing with CI"
+                        );
                         true
                     }
                     Err(_) => false,
@@ -373,14 +385,16 @@ impl Node for VesselNode {
                                 "Derived worker not available for CI fix, finding idle forge worker as fallback"
                             );
                             if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
-                                self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                                self.assign_worker_for_ci_fix(store, &fallback_id, &tid)
+                                    .await
                             } else {
                                 false
                             }
                         }
                     } else {
                         if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
-                            self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                            self.assign_worker_for_ci_fix(store, &fallback_id, &tid)
+                                .await
                         } else {
                             false
                         }
@@ -431,7 +445,8 @@ impl Node for VesselNode {
                             ticket_id = ?ticket_id,
                             "MergeBlocked reason indicates conflicts — tracking to prevent re-add loop"
                         );
-                        self.increment_merge_blocked_attempts(store, *pr_number).await;
+                        self.increment_merge_blocked_attempts(store, *pr_number)
+                            .await;
                     }
 
                     let tid = ticket_id
@@ -532,14 +547,16 @@ impl Node for VesselNode {
                                 "Derived worker not available for CI timeout fix, finding idle forge worker as fallback"
                             );
                             if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
-                                self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                                self.assign_worker_for_ci_fix(store, &fallback_id, &tid)
+                                    .await
                             } else {
                                 false
                             }
                         }
                     } else {
                         if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
-                            self.assign_worker_for_ci_fix(store, &fallback_id, &tid).await
+                            self.assign_worker_for_ci_fix(store, &fallback_id, &tid)
+                                .await
                         } else {
                             false
                         }
@@ -666,7 +683,10 @@ impl Node for VesselNode {
                         });
 
                     let worker_reassigned = if let Some(ref wid) = derived_worker_id {
-                        if self.assign_worker_for_conflict_rework(store, wid, &tid).await {
+                        if self
+                            .assign_worker_for_conflict_rework(store, wid, &tid)
+                            .await
+                        {
                             true
                         } else {
                             info!(
@@ -674,14 +694,16 @@ impl Node for VesselNode {
                                 "Derived worker not available, finding idle forge worker as fallback"
                             );
                             if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
-                                self.assign_worker_for_conflict_rework(store, &fallback_id, &tid).await
+                                self.assign_worker_for_conflict_rework(store, &fallback_id, &tid)
+                                    .await
                             } else {
                                 false
                             }
                         }
                     } else {
                         if let Some(fallback_id) = self.find_idle_forge_worker(store).await {
-                            self.assign_worker_for_conflict_rework(store, &fallback_id, &tid).await
+                            self.assign_worker_for_conflict_rework(store, &fallback_id, &tid)
+                                .await
                         } else {
                             false
                         }
@@ -754,7 +776,10 @@ impl VesselNode {
 
         let resp = client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.github_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.github_token),
+            )
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
@@ -920,7 +945,9 @@ impl VesselNode {
                 branch = %pr_info.head_branch,
                 "Docs PR has merge conflicts — closing to allow lore to regenerate"
             );
-            return self.close_docs_pr_with_conflicts(owner, repo, &pr_info).await;
+            return self
+                .close_docs_pr_with_conflicts(owner, repo, &pr_info)
+                .await;
         }
 
         let ticket_id = pr_info.ticket_id.clone();
@@ -1395,8 +1422,7 @@ impl VesselNode {
     }
 
     fn is_docs_pr(pr_info: &PrInfo) -> bool {
-        pr_info.head_branch.starts_with("lore/")
-            || pr_info.ticket_id.as_deref() == Some("T-DOCS")
+        pr_info.head_branch.starts_with("lore/") || pr_info.ticket_id.as_deref() == Some("T-DOCS")
     }
 
     /// Close a docs PR that has conflicts, allowing lore to regenerate.
@@ -1411,7 +1437,11 @@ impl VesselNode {
                        Closing to allow the lore agent to regenerate the documentation. \
                        Lore will create a fresh docs PR on the next deployment cycle.";
 
-        match self.client.close_pull_request(owner, repo, pr_number, Some(comment)).await {
+        match self
+            .client
+            .close_pull_request(owner, repo, pr_number, Some(comment))
+            .await
+        {
             Ok(()) => {
                 info!(pr_number, "Closed conflicting docs PR");
                 Ok(VesselOutcome::DocsPrClosed {

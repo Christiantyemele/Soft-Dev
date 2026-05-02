@@ -46,7 +46,13 @@ impl AgentRole {
     }
 
     pub fn all() -> &'static [AgentRole] {
-        &[AgentRole::Nexus, AgentRole::Forge, AgentRole::Sentinel, AgentRole::Vessel, AgentRole::Lore]
+        &[
+            AgentRole::Nexus,
+            AgentRole::Forge,
+            AgentRole::Sentinel,
+            AgentRole::Vessel,
+            AgentRole::Lore,
+        ]
     }
 }
 
@@ -154,11 +160,17 @@ impl IdentityManager {
     pub fn reload(&self, path: impl AsRef<Path>) -> Result<()> {
         let registry = Registry::load(path)?;
         {
-            let mut reg = self.registry.write().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let mut reg = self
+                .registry
+                .write()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             *reg = registry;
         }
         {
-            let mut cache = self.token_cache.write().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let mut cache = self
+                .token_cache
+                .write()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             cache.tokens.clear();
         }
         Ok(())
@@ -166,7 +178,10 @@ impl IdentityManager {
 
     /// Get the underlying Registry (read-only access).
     pub fn registry(&self) -> Result<Registry> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         Ok(reg.clone())
     }
 
@@ -175,7 +190,10 @@ impl IdentityManager {
     /// For forge instances, this looks up the base "forge" entry and creates
     /// an identity with the instance number appended.
     pub fn get_identity(&self, agent_id: &str) -> Result<AgentIdentity> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let (entry, role, instance_num) = Self::resolve_entry(&reg, agent_id)?;
         let github_token = self.resolve_token_for_entry(&entry)?;
         drop(reg);
@@ -194,27 +212,32 @@ impl IdentityManager {
 
     /// Resolve the RegistryEntry for a given agent_id.
     /// Handles both base roles ("forge") and instance slots ("forge-1").
-    fn resolve_entry(registry: &Registry, agent_id: &str) -> Result<(RegistryEntry, AgentRole, Option<u32>)> {
+    fn resolve_entry(
+        registry: &Registry,
+        agent_id: &str,
+    ) -> Result<(RegistryEntry, AgentRole, Option<u32>)> {
         if let Ok(role) = AgentRole::from_str(agent_id) {
-            let entry = registry.get(agent_id)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found in registry or inactive", agent_id))?;
+            let entry = registry.get(agent_id).cloned().ok_or_else(|| {
+                anyhow::anyhow!("Agent '{}' not found in registry or inactive", agent_id)
+            })?;
             return Ok((entry, role, None));
         }
 
         if agent_id.starts_with("forge-") {
             let instance_str = agent_id.strip_prefix("forge-").unwrap();
-            let instance_num: u32 = instance_str.parse()
+            let instance_num: u32 = instance_str
+                .parse()
                 .with_context(|| format!("Invalid forge instance number: {}", instance_str))?;
 
-            let entry = registry.get("forge")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Base agent 'forge' not found in registry or inactive"))?;
+            let entry = registry.get("forge").cloned().ok_or_else(|| {
+                anyhow::anyhow!("Base agent 'forge' not found in registry or inactive")
+            })?;
 
             if instance_num > entry.instances {
                 return Err(anyhow::anyhow!(
                     "Forge instance {} exceeds configured instances ({})",
-                    instance_num, entry.instances
+                    instance_num,
+                    entry.instances
                 ));
             }
 
@@ -225,12 +248,20 @@ impl IdentityManager {
             let prefix = format!("{}-", role.as_str());
             if agent_id.starts_with(&prefix) {
                 let instance_str = agent_id.strip_prefix(&prefix).unwrap();
-                let instance_num: u32 = instance_str.parse()
-                    .with_context(|| format!("Invalid instance number for {}: {}", role.as_str(), instance_str))?;
+                let instance_num: u32 = instance_str.parse().with_context(|| {
+                    format!(
+                        "Invalid instance number for {}: {}",
+                        role.as_str(),
+                        instance_str
+                    )
+                })?;
 
-                let entry = registry.get(role.as_str())
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Base agent '{}' not found in registry or inactive", role.as_str()))?;
+                let entry = registry.get(role.as_str()).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Base agent '{}' not found in registry or inactive",
+                        role.as_str()
+                    )
+                })?;
 
                 return Ok((entry, *role, Some(instance_num)));
             }
@@ -241,7 +272,10 @@ impl IdentityManager {
 
     /// Resolve GitHub token for an agent (with caching).
     pub fn resolve_github_token(&self, agent_id: &str) -> Result<String> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let (entry, _, _) = Self::resolve_entry(&reg, agent_id)?;
         drop(reg);
         self.resolve_token_for_entry(&entry)
@@ -249,7 +283,10 @@ impl IdentityManager {
 
     fn resolve_token_for_entry(&self, entry: &RegistryEntry) -> Result<String> {
         {
-            let cache = self.token_cache.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let cache = self
+                .token_cache
+                .read()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             if let Some(cached) = cache.tokens.get(&entry.id) {
                 return Ok(cached.clone());
             }
@@ -263,7 +300,10 @@ impl IdentityManager {
         };
 
         {
-            let mut cache = self.token_cache.write().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let mut cache = self
+                .token_cache
+                .write()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             cache.tokens.insert(entry.id.clone(), token.clone());
         }
 
@@ -274,7 +314,10 @@ impl IdentityManager {
     /// For Forge, returns all instances (forge-1, forge-2, ...).
     /// For other roles, returns a single identity if active.
     pub fn get_identities_for_role(&self, role: AgentRole) -> Result<Vec<AgentIdentity>> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
 
         let entry = match reg.get(role.as_str()) {
             Some(e) => e.clone(),
@@ -325,33 +368,48 @@ impl IdentityManager {
 
     /// Get all worker slot names (for SharedStore initialization).
     pub fn all_worker_slots(&self) -> Result<Vec<String>> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         Ok(reg.all_worker_slots())
     }
 
     /// Get forge worker slot names only.
     pub fn forge_slots(&self) -> Result<Vec<String>> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         Ok(reg.forge_slots())
     }
 
     /// Get the model_backend for a specific agent.
     pub fn get_model_backend(&self, agent_id: &str) -> Result<Option<String>> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let (entry, _, _) = Self::resolve_entry(&reg, agent_id)?;
         Ok(entry.model_backend.clone())
     }
 
     /// Get the routing_key for a specific agent.
     pub fn get_routing_key(&self, agent_id: &str) -> Result<Option<String>> {
-        let reg = self.registry.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let reg = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let (entry, _, _) = Self::resolve_entry(&reg, agent_id)?;
         Ok(entry.routing_key.clone())
     }
 
     /// Clear the token cache (for testing or token rotation).
     pub fn clear_cache(&self) -> Result<()> {
-        let mut cache = self.token_cache.write().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut cache = self
+            .token_cache
+            .write()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         cache.tokens.clear();
         Ok(())
     }
@@ -431,7 +489,10 @@ mod tests {
         let nexus = manager.get_identity("nexus").unwrap();
         assert_eq!(nexus.role, AgentRole::Nexus);
         assert_eq!(nexus.instance_num, None);
-        assert_eq!(nexus.model_backend, Some("accounts/fireworks/models/kimi-k2p6".to_string()));
+        assert_eq!(
+            nexus.model_backend,
+            Some("accounts/fireworks/models/kimi-k2p6".to_string())
+        );
     }
 
     #[test]
@@ -487,7 +548,10 @@ mod tests {
 
         let result = manager.get_identity("forge-3");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds configured instances"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds configured instances"));
     }
 
     #[test]
@@ -505,7 +569,10 @@ mod tests {
         let manager = IdentityManager::load(f.path()).unwrap();
 
         let model = manager.get_model_backend("nexus").unwrap();
-        assert_eq!(model, Some("accounts/fireworks/models/kimi-k2p6".to_string()));
+        assert_eq!(
+            model,
+            Some("accounts/fireworks/models/kimi-k2p6".to_string())
+        );
     }
 
     #[test]

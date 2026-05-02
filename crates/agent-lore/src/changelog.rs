@@ -29,8 +29,7 @@ impl ChangelogManager {
         if content.contains(&entry_line) {
             info!(
                 category = category.as_str(),
-                pr_number,
-                "Changelog entry already exists — skipping duplicate"
+                pr_number, "Changelog entry already exists — skipping duplicate"
             );
             return Ok(());
         }

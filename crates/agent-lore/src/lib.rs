@@ -125,7 +125,10 @@ impl LoreNode {
 
     async fn get_issue_body(&self, store: &SharedStore, ticket_id: &str) -> Option<String> {
         let tickets: Vec<Ticket> = store.get_typed(KEY_TICKETS).await.unwrap_or_default();
-        tickets.iter().find(|t| t.id == ticket_id).map(|t| t.body.clone())
+        tickets
+            .iter()
+            .find(|t| t.id == ticket_id)
+            .map(|t| t.body.clone())
     }
 
     const KEY_LORE_PROCESSED_EVENTS: &str = "lore_processed_events";
@@ -198,7 +201,9 @@ impl LoreNode {
                             .strip_prefix(&format!("[{}] ", ticket_id))
                             .unwrap_or(&pr_title);
 
-                        let (context, decision_summary, consequences) = if let Some(ref b) = enriched_body {
+                        let (context, decision_summary, consequences) = if let Some(ref b) =
+                            enriched_body
+                        {
                             let lines: Vec<&str> = b
                                 .lines()
                                 .map(|l| l.trim())
@@ -207,28 +212,48 @@ impl LoreNode {
                                 })
                                 .take(8)
                                 .collect();
-                            
+
                             let ctx = lines.join("\n");
-                            
-                            let decision = if lines.iter().any(|l| l.contains("implement") || l.contains("add") || l.contains("create")) {
-                                format!("Adopt the implementation approach described in {}.", adr_title)
-                            } else if lines.iter().any(|l| l.contains("fix") || l.contains("resolve")) {
+
+                            let decision = if lines.iter().any(|l| {
+                                l.contains("implement") || l.contains("add") || l.contains("create")
+                            }) {
+                                format!(
+                                    "Adopt the implementation approach described in {}.",
+                                    adr_title
+                                )
+                            } else if lines
+                                .iter()
+                                .any(|l| l.contains("fix") || l.contains("resolve"))
+                            {
                                 format!("Apply the fix described in {}.", adr_title)
                             } else {
-                                format!("Implement changes described in PR #{} for ticket {}.", pr_number, ticket_id)
+                                format!(
+                                    "Implement changes described in PR #{} for ticket {}.",
+                                    pr_number, ticket_id
+                                )
                             };
-                            
+
                             let conseq = format!(
                                 "{} is now implemented and merged into the main branch. This resolves ticket {}.",
                                 adr_title, ticket_id
                             );
-                            
+
                             (ctx, decision, conseq)
                         } else {
                             (
-                                format!("Changes merged in PR #{} for ticket {}.", pr_number, ticket_id),
-                                format!("Implement changes described in PR #{} for ticket {}.", pr_number, ticket_id),
-                                format!("Ticket {} is now resolved and merged into main branch.", ticket_id),
+                                format!(
+                                    "Changes merged in PR #{} for ticket {}.",
+                                    pr_number, ticket_id
+                                ),
+                                format!(
+                                    "Implement changes described in PR #{} for ticket {}.",
+                                    pr_number, ticket_id
+                                ),
+                                format!(
+                                    "Ticket {} is now resolved and merged into main branch.",
+                                    ticket_id
+                                ),
                             )
                         };
 
@@ -259,7 +284,9 @@ impl LoreNode {
 
         if new_processed.len() > processed.len() {
             let processed_vec: Vec<String> = new_processed.into_iter().collect();
-            store.set(Self::KEY_LORE_PROCESSED_EVENTS, json!(processed_vec)).await;
+            store
+                .set(Self::KEY_LORE_PROCESSED_EVENTS, json!(processed_vec))
+                .await;
         }
 
         tasks
@@ -326,22 +353,29 @@ impl LoreNode {
                 .collect();
 
             if !lines.is_empty() {
-                let section_keywords = ["Description", "Summary", "What", "Changes", "Implementation"];
-                let impl_section = lines.iter().position(|l| {
-                    section_keywords.iter().any(|kw| l.contains(kw))
-                });
+                let section_keywords = [
+                    "Description",
+                    "Summary",
+                    "What",
+                    "Changes",
+                    "Implementation",
+                ];
+                let impl_section = lines
+                    .iter()
+                    .position(|l| section_keywords.iter().any(|kw| l.contains(kw)));
                 let start = impl_section.map(|p| p + 1).unwrap_or(0);
 
                 let content_lines: Vec<&&str> = lines[start..]
                     .iter()
-                    .filter(|l| {
-                        (!l.starts_with('-') && !l.starts_with('*')) || l.len() > 20
-                    })
+                    .filter(|l| (!l.starts_with('-') && !l.starts_with('*')) || l.len() > 20)
                     .take(3)
                     .collect();
 
                 if !content_lines.is_empty() {
-                    let summary = content_lines[0].trim_start_matches('-').trim_start_matches('*').trim();
+                    let summary = content_lines[0]
+                        .trim_start_matches('-')
+                        .trim_start_matches('*')
+                        .trim();
                     if summary.len() > 15 {
                         let mut entry = summary.to_string();
                         if let Some(first) = entry.get_mut(0..1) {
@@ -571,11 +605,7 @@ impl LoreNode {
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!(
-                "Failed to push branch {}: {}",
-                branch_name,
-                stderr
-            ));
+            return Err(anyhow!("Failed to push branch {}: {}", branch_name, stderr));
         }
         info!("LORE: Pushed branch {}", branch_name);
 
@@ -628,7 +658,14 @@ impl LoreNode {
             chrono::Utc::now().format("%Y-%m-%d %H:%M")
         );
         let pr_number = client
-            .create_pull_request(owner, repo_name, &title, branch_name, "main", Some(&pr_body))
+            .create_pull_request(
+                owner,
+                repo_name,
+                &title,
+                branch_name,
+                "main",
+                Some(&pr_body),
+            )
             .await?;
 
         info!(pr_number, "LORE: Created documentation PR");

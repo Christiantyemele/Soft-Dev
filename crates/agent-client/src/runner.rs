@@ -50,7 +50,10 @@ impl AgentRunner {
 
     /// Create a runner with explicit GitHub token for MCP session.
     /// Use this when you have per-agent tokens resolved from the registry.
-    pub async fn from_env_with_token(model_backend: Option<&str>, github_token: &str) -> Result<Self> {
+    pub async fn from_env_with_token(
+        model_backend: Option<&str>,
+        github_token: &str,
+    ) -> Result<Self> {
         let client: Box<dyn LlmClient> = match model_backend {
             Some(m) => Box::new(FallbackClient::from_env_with_model(m)?),
             None => Box::new(FallbackClient::from_env()?),
