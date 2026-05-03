@@ -98,7 +98,11 @@ impl GitHubStep {
                     "  Configure tokens for agent operations",
                     Style::default().fg(theme.muted()),
                 );
-                let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
+                let perm_hint = Line::styled(
+                    "  Tokens need: FORGE (contents+PRs+issues rw), SENTINEL (PRs rw), VESSEL (contents+PRs+workflows rw), LORE (contents rw)",
+                    Style::default().fg(theme.muted()),
+                );
+                let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle, perm_hint]);
                 title_para.render(inner_title, f.buffer_mut());
 
                 let input_area = Rect::new(chunks[1].x, chunks[1].y, chunks[1].width, chunks[1].height);

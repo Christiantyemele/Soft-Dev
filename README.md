@@ -8,23 +8,57 @@ An autonomous software development team composed of AI agents working in a unifi
 
 ## Quick Start
 
+### Option 1: One-Line Install (Recommended)
 ```bash
-# 1. Clone and setup
+curl -fsSL https://raw.githubusercontent.com/The-AgenticFlow/AgentFlow/main/scripts/install.sh | bash
+```
+This installs all binaries to `~/.local/bin` and offers to run the setup wizard.
+
+### Option 2: Homebrew (macOS)
+```bash
+brew tap The-AgenticFlow/openflows
+brew install openflows
+```
+
+### Option 3: Docker
+```bash
+docker run -it --rm \
+  -v "$HOME/.agentflow:/home/openflows/.agentflow" \
+  -v "$(pwd):/workspace" \
+  -e ANTHROPIC_API_KEY=your_key \
+  -e GITHUB_PERSONAL_ACCESS_TOKEN=your_token \
+  ghcr.io/the-agenticflow/openflows:latest setup
+```
+
+### Option 4: npm
+```bash
+npm install -g openflows
+openflows-setup       # Guided setup wizard
+openflows             # Start orchestration
+```
+
+### Option 5: Build from Source
+```bash
 git clone https://github.com/The-AgenticFlow/AgentFlow.git
 cd AgentFlow
-cp .env.example .env
-# Edit .env with your API keys
-
-# 2. Start the local proxy (required when gateway doesn't support Anthropic format)
-source .env && ./scripts/start_proxy.sh &
-# Or if your provider supports Anthropic directly, skip this step
-
-# 3. Verify setup (optional but recommended)
-./scripts/check_setup.sh
-
-# 4. Run the orchestration
-cargo run --bin agentflow
+make release          # or: cargo build --release -p openflows
+make install          # installs to ~/.local/bin
+openflows-setup       # Guided setup wizard
+openflows             # Start orchestration
 ```
+
+### Option 6: Cargo Install
+```bash
+cargo install openflows
+openflows-setup
+openflows
+```
+
+### After Installation
+1. **Configure** — Run `agentflow-setup` for the guided TUI wizard
+2. **Verify** — Run `agentflow-doctor` to check your environment
+3. **Run** — Run `agentflow` to start the autonomous team
+4. **Monitor** — Run `agentflow-dashboard` for live worker status
 
 ## Getting Started
 
