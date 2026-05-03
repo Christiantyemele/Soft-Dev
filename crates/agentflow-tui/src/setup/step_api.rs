@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
@@ -115,79 +115,60 @@ impl ApiStep {
 
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .margin(2)
+                    .margin(3)
                     .constraints([
-                        Constraint::Length(2),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Min(6),
+                        Constraint::Length(4),
+                        Constraint::Min(1),
                         Constraint::Length(2),
                     ])
                     .split(area);
 
-                let title_line = Line::styled(
-                    "┌  OpenFlow Setup",
+                let title_block = ratatui::widgets::Block::default()
+                    .borders(ratatui::widgets::Borders::BOTTOM)
+                    .border_style(Style::default().fg(theme.border()));
+
+                let inner_title = title_block.inner(chunks[0]);
+                title_block.render(chunks[0], f.buffer_mut());
+
+                let title = Line::styled(
+                    "◇ LLM PROVIDER",
                     Style::default()
-                        .fg(theme.accent())
+                        .fg(theme.accent_alt())
                         .add_modifier(Modifier::BOLD),
                 );
-                let title_para = Paragraph::new(title_line);
-                title_para.render(chunks[0], f.buffer_mut());
-
-                let sep_line = Line::styled(
-                    "│",
-                    Style::default().fg(theme.border()),
+                let subtitle = Line::styled(
+                    format!("  Configure {} API credentials", provider_name),
+                    Style::default().fg(theme.muted()),
                 );
-                let sep_para = Paragraph::new(sep_line);
-                sep_para.render(chunks[1], f.buffer_mut());
+                let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
+                title_para.render(inner_title, f.buffer_mut());
 
-                let prompt_line = Line::styled(
-                    "◆  LLM Provider",
-                    Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
-                );
-                let prompt_para = Paragraph::new(prompt_line);
-                prompt_para.render(chunks[2], f.buffer_mut());
-
-                let input_area = Rect::new(chunks[3].x, chunks[3].y, chunks[3].width, chunks[3].height);
+                let input_area = Rect::new(chunks[1].x, chunks[1].y, chunks[1].width, chunks[1].height);
 
                 let mut current_y = input_area.y;
 
-                let sep = Line::styled(
-                    format!("── {} ──", provider_name),
-                    Style::default().fg(theme.muted()),
-                );
-                let sep_para = Paragraph::new(sep).alignment(Alignment::Center);
-                sep_para.render(
-                    Rect::new(input_area.x, current_y, input_area.width, 1),
-                    f.buffer_mut(),
-                );
-                current_y += 2;
-
+                let field_height = 3u16;
+                
                 for (i, field) in fields.iter().enumerate() {
-                    let label = if field.required {
-                        format!("{} (required)", field.label)
-                    } else {
-                        format!("{} (optional)", field.label)
-                    };
+                    if current_y + field_height > input_area.y + input_area.height {
+                        break;
+                    }
 
-                    let widget = InputWidget::new(&field.input, &label)
+                    let widget = InputWidget::new(&field.input, &field.label)
                         .masked(true)
                         .focused(focused_field == i)
                         .optional(!field.required);
                     widget.render(
-                        Rect::new(input_area.x, current_y, input_area.width, 3),
+                        Rect::new(input_area.x, current_y, input_area.width, field_height),
                         f.buffer_mut(),
                     );
-                    current_y += 4;
+                    current_y += field_height + 1;
                 }
 
-                let help_text = "Tab: switch | Enter: continue | Esc: cancel";
-                let help_line = Line::styled(
-                    help_text,
-                    Style::default().fg(theme.muted()),
-                );
-                let help_para = Paragraph::new(help_line).alignment(Alignment::Center);
-                help_para.render(chunks[4], f.buffer_mut());
+                let help = "  Tab/Arrows: navigate  │  Enter: continue  │  Esc: cancel";
+                let help_line = Line::styled(help, Style::default().fg(theme.muted()));
+                let help_para = Paragraph::new(help_line);
+                help_para.render(chunks[2], f.buffer_mut());
             })?;
 
             if crossterm::event::poll(std::time::Duration::from_millis(100))? {

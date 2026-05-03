@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
-use ratatui::prelude::Widget;
+use ratatui::prelude::{Line, Modifier, Style, Widget};
 use ratatui::Terminal;
 use std::io;
 use tui_input::backend::crossterm::EventHandler;
@@ -24,6 +24,7 @@ impl RepoStep {
         _theme: &Theme,
         config: &mut SetupConfig,
     ) -> Result<()> {
+        let theme = Theme::default();
         let mut repo_input = Input::new(config.repo.clone());
         let mut workspace_input = Input::new(config.workspace_dir.clone());
         let mut focused_field = 0;
@@ -36,25 +37,41 @@ impl RepoStep {
 
             terminal.draw(|f| {
                 let area = f.area();
-                let y_start = area.height / 2 - 4;
+                let y_start = area.height / 2 - 6;
+
+                let title = Line::styled(
+                    "◇ REPOSITORY CONFIGURATION",
+                    Style::default()
+                        .fg(theme.accent())
+                        .add_modifier(Modifier::BOLD),
+                );
+                let subtitle = Line::styled(
+                    "  Set target repository and workspace",
+                    Style::default().fg(theme.muted()),
+                );
+                let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
+                title_para.render(
+                    ratatui::layout::Rect { x: 2, y: y_start, width: area.width - 4, height: 2 },
+                    f.buffer_mut(),
+                );
 
                 let repo_widget_area = ratatui::layout::Rect {
                     x: 2,
-                    y: y_start,
+                    y: y_start + 3,
                     width: area.width - 4,
                     height: 3,
                 };
-                let repo_widget = InputWidget::new(&repo_input, "GitHub Repository (owner/repo)")
+                let repo_widget = InputWidget::new(&repo_input, "GitHub Repository")
                     .focused(focused_field == 0);
                 repo_widget.render(repo_widget_area, f.buffer_mut());
 
                 let ws_widget_area = ratatui::layout::Rect {
                     x: 2,
-                    y: y_start + 4,
+                    y: y_start + 7,
                     width: area.width - 4,
                     height: 3,
                 };
-                let ws_widget = InputWidget::new(&workspace_input, "Workspace directory")
+                let ws_widget = InputWidget::new(&workspace_input, "Workspace Directory")
                     .focused(focused_field == 1);
                 ws_widget.render(ws_widget_area, f.buffer_mut());
 
@@ -74,7 +91,7 @@ impl RepoStep {
                 }
                 let check_area = ratatui::layout::Rect {
                     x: 2,
-                    y: y_start + 8,
+                    y: y_start + 11,
                     width: area.width - 4,
                     height: 4,
                 };

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
-use ratatui::prelude::Widget;
+use ratatui::prelude::{Line, Modifier, Style, Widget};
 use ratatui::Terminal;
 use std::io;
 use tui_input::backend::crossterm::EventHandler;
@@ -23,6 +23,7 @@ impl ProxyStep {
         _theme: &Theme,
         config: &mut SetupConfig,
     ) -> Result<()> {
+        let theme = Theme::default();
         let mut proxy_url_input = Input::new(config.proxy_url.clone().unwrap_or_default());
         let mut proxy_key_input = Input::new(config.proxy_api_key.clone().unwrap_or_default());
         let mut gateway_url_input = Input::new(config.gateway_url.clone().unwrap_or_default());
@@ -32,7 +33,23 @@ impl ProxyStep {
         loop {
             terminal.draw(|f| {
                 let area = f.area();
-                let y_start = area.height / 2 - 4;
+                let y_start = area.height / 2 - 8;
+
+                let title = Line::styled(
+                    "◇ PROXY CONFIGURATION",
+                    Style::default()
+                        .fg(theme.accent())
+                        .add_modifier(Modifier::BOLD),
+                );
+                let subtitle = Line::styled(
+                    "  Advanced: configure LiteLLM proxy settings",
+                    Style::default().fg(theme.muted()),
+                );
+                let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
+                title_para.render(
+                    ratatui::layout::Rect { x: 2, y: y_start, width: area.width - 4, height: 2 },
+                    f.buffer_mut(),
+                );
 
                 let fields = [
                     (&proxy_url_input, "Proxy URL", true),
@@ -42,7 +59,7 @@ impl ProxyStep {
                 ];
 
                 for (i, (input, label, optional)) in fields.iter().enumerate() {
-                    let y = y_start + (i as u16) * 4;
+                    let y = y_start + 3 + (i as u16) * 4;
                     let widget_area = ratatui::layout::Rect {
                         x: 2,
                         y,

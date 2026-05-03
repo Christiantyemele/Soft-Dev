@@ -42,26 +42,35 @@ impl Widget for InputWidget<'_> {
     fn render(self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         let theme = crate::util::theme::Theme::default();
         let display_value = if self.masked {
-            "*".repeat(self.input.value().chars().count())
+            "•".repeat(self.input.value().chars().count())
         } else {
             self.input.value().to_string()
         };
 
-        let label_suffix = if self.optional { " (optional)" } else { "" };
-        let full_label = format!("{}{}:", self.label, label_suffix);
-
-        let border_style = if self.focused {
-            Style::default()
-                .fg(theme.accent())
-                .add_modifier(Modifier::BOLD)
+        let label_suffix = if self.optional { "" } else { "" };
+        let full_label = if self.label.ends_with(':') {
+            format!(" {}{}", self.label.trim_end_matches(':'), label_suffix)
         } else {
-            Style::default().fg(theme.muted())
+            format!(" {}{}", self.label, label_suffix)
+        };
+
+        let border_color = if self.focused {
+            theme.border_focus()
+        } else {
+            theme.border()
         };
 
         let block = Block::default()
             .borders(Borders::ALL)
             .title(full_label)
-            .border_style(border_style);
+            .title_style(if self.focused {
+                Style::default()
+                    .fg(theme.border_focus())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted())
+            })
+            .border_style(Style::default().fg(border_color));
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -72,25 +81,27 @@ impl Widget for InputWidget<'_> {
             let mut result = String::new();
             for (i, c) in chars.iter().enumerate() {
                 if i == cursor_pos {
-                    result.push_str(&format!("█{}", c));
+                    result.push_str(&format!("│{}", c));
                 } else {
                     result.push(*c);
                 }
             }
             if cursor_pos >= chars.len() {
-                result.push('█');
+                result.push('│');
             }
             result
         } else if display_value.is_empty() {
-            "...".to_string()
+            "···".to_string()
         } else {
             display_value.clone()
         };
 
         let style = if !self.focused && display_value.is_empty() {
             Style::default().fg(theme.muted())
+        } else if self.focused {
+            Style::default().fg(theme.fg())
         } else {
-            theme.text_style()
+            Style::default().fg(theme.muted())
         };
 
         let paragraph = ratatui::widgets::Paragraph::new(display_with_cursor).style(style);

@@ -8,68 +8,53 @@ pub enum Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        match std::env::var("AGENTFLOW_THEME").as_deref() {
-            Ok("light") => Theme::Light,
-            _ => Theme::Dark,
-        }
+        Theme::Dark
     }
 }
 
 impl Theme {
     pub fn bg(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(30, 30, 46),
-            Theme::Light => Color::Rgb(239, 241, 245),
-        }
+        Color::Rgb(10, 10, 15)
+    }
+
+    pub fn surface(&self) -> Color {
+        Color::Rgb(18, 18, 26)
     }
 
     pub fn fg(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(205, 214, 244),
-            Theme::Light => Color::Rgb(68, 73, 90),
-        }
+        Color::Rgb(230, 235, 245)
     }
 
     pub fn border(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(137, 180, 250),
-            Theme::Light => Color::Rgb(114, 135, 253),
-        }
+        Color::Rgb(60, 70, 100)
+    }
+
+    pub fn border_focus(&self) -> Color {
+        Color::Rgb(0, 255, 170)
     }
 
     pub fn success(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(166, 227, 161),
-            Theme::Light => Color::Rgb(64, 160, 43),
-        }
+        Color::Rgb(0, 255, 170)
     }
 
     pub fn error(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(243, 139, 168),
-            Theme::Light => Color::Rgb(218, 41, 71),
-        }
+        Color::Rgb(255, 85, 120)
     }
 
     pub fn warning(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(249, 226, 175),
-            Theme::Light => Color::Rgb(223, 142, 29),
-        }
+        Color::Rgb(255, 200, 100)
     }
 
     pub fn accent(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(137, 180, 250),
-            Theme::Light => Color::Rgb(114, 135, 253),
-        }
+        Color::Rgb(0, 200, 255)
+    }
+
+    pub fn accent_alt(&self) -> Color {
+        Color::Rgb(180, 100, 255)
     }
 
     pub fn muted(&self) -> Color {
-        match self {
-            Theme::Dark => Color::Rgb(88, 91, 112),
-            Theme::Light => Color::Rgb(160, 166, 187),
-        }
+        Color::Rgb(80, 85, 110)
     }
 
     pub fn title_style(&self) -> Style {

@@ -2,7 +2,6 @@ use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::prelude::*;
-use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::io;
 
@@ -60,46 +59,40 @@ impl ProviderStep {
 
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .margin(2)
+                    .margin(3)
                     .constraints([
-                        Constraint::Length(2),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
+                        Constraint::Length(4),
                         Constraint::Min(8),
                     ])
                     .split(area);
 
-                let title_line = Line::styled(
-                    "┌  OpenFlow Setup",
+                let title_block = ratatui::widgets::Block::default()
+                    .borders(ratatui::widgets::Borders::BOTTOM)
+                    .border_style(Style::default().fg(theme.border()));
+
+                let inner_title = title_block.inner(chunks[0]);
+                title_block.render(chunks[0], f.buffer_mut());
+
+                let title = Line::styled(
+                    "◇ SELECT LLM PROVIDER",
                     Style::default()
-                        .fg(theme.accent())
+                        .fg(theme.accent_alt())
                         .add_modifier(Modifier::BOLD),
                 );
-                let title_para = Paragraph::new(title_line);
-                title_para.render(chunks[0], f.buffer_mut());
-
-                let sep_line = Line::styled(
-                    "│",
-                    Style::default().fg(theme.border()),
+                let subtitle = Line::styled(
+                    "  Choose your AI backend",
+                    Style::default().fg(theme.muted()),
                 );
-                let sep_para = Paragraph::new(sep_line);
-                sep_para.render(chunks[1], f.buffer_mut());
-
-                let prompt_line = Line::styled(
-                    "◆  LLM Provider",
-                    Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
-                );
-                let prompt_para = Paragraph::new(prompt_line);
-                prompt_para.render(chunks[2], f.buffer_mut());
+                let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
+                title_para.render(inner_title, f.buffer_mut());
 
                 let list_widget = crate::widgets::select::SelectableList::new(
                     &list_state.items,
                     list_state.selected,
                 )
-                .title("Select LLM provider")
                 .search_query(&list_state.search_input);
 
-                list_widget.render(chunks[3], f.buffer_mut());
+                list_widget.render(chunks[1], f.buffer_mut());
             })?;
 
             if crossterm::event::poll(std::time::Duration::from_millis(100))? {

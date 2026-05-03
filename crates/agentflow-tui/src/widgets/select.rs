@@ -82,9 +82,9 @@ impl Widget for SelectableList<'_> {
         if self.show_search {
             let search_val = self.search_query.map(|i| i.value()).unwrap_or("");
             let search_line = Line::from(vec![
-                Span::styled("Search: ", theme.muted_style()),
-                Span::styled(search_val, theme.text_style()),
-                Span::styled("_", Style::default().fg(theme.accent())),
+                Span::styled("  ◄ ", Style::default().fg(theme.muted())),
+                Span::styled(search_val, Style::default().fg(theme.fg())),
+                Span::styled("│", Style::default().fg(theme.accent())),
             ]);
             lines.push(search_line);
             lines.push(Line::raw(""));
@@ -92,13 +92,13 @@ impl Widget for SelectableList<'_> {
 
         for (idx, item) in visible.iter().skip(scroll_offset).take(content_height as usize) {
             let is_selected = *idx == self.selected;
-            let icon = if is_selected { "●" } else { "○" };
+            let icon = if is_selected { "▸" } else { " " };
             let style = if is_selected {
                 Style::default()
                     .fg(theme.accent())
                     .add_modifier(Modifier::BOLD)
             } else {
-                theme.text_style()
+                Style::default().fg(theme.muted())
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("  {} ", icon), style),
@@ -111,24 +111,16 @@ impl Widget for SelectableList<'_> {
         }
 
         let footer = Line::from(vec![
-            Span::styled("↑/↓", theme.muted_style()),
-            Span::styled(" select ", Style::default().fg(theme.fg())),
-            Span::styled("Enter", theme.muted_style()),
-            Span::styled(" confirm ", Style::default().fg(theme.fg())),
-            Span::styled("Type", theme.muted_style()),
-            Span::styled(" search", Style::default().fg(theme.fg())),
+            Span::styled("  ↑/↓", Style::default().fg(theme.muted())),
+            Span::styled(" navigate  ", Style::default().fg(theme.fg())),
+            Span::styled("Enter", Style::default().fg(theme.muted())),
+            Span::styled(" select  ", Style::default().fg(theme.fg())),
+            Span::styled("Esc", Style::default().fg(theme.muted())),
+            Span::styled(" back", Style::default().fg(theme.fg())),
         ]);
 
         let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border()))
-            .title_style(theme.title_style());
-
-        let block = if let Some(title) = self.title {
-            block.title(format!(" {} ", title))
-        } else {
-            block
-        };
+            .borders(Borders::NONE);
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -136,7 +128,7 @@ impl Widget for SelectableList<'_> {
         let mut all_lines = lines.clone();
         all_lines.push(footer);
 
-        let paragraph = Paragraph::new(all_lines).style(theme.text_style());
+        let paragraph = Paragraph::new(all_lines);
         paragraph.render(inner, buf);
     }
 }
