@@ -42,7 +42,7 @@ impl RepoStep {
                     x: 2,
                     y: y_start,
                     width: area.width - 4,
-                    height: 1,
+                    height: 3,
                 };
                 let repo_widget = InputWidget::new(&repo_input, "GitHub Repository (owner/repo)")
                     .focused(focused_field == 0);
@@ -50,9 +50,9 @@ impl RepoStep {
 
                 let ws_widget_area = ratatui::layout::Rect {
                     x: 2,
-                    y: y_start + 2,
+                    y: y_start + 4,
                     width: area.width - 4,
-                    height: 1,
+                    height: 3,
                 };
                 let ws_widget = InputWidget::new(&workspace_input, "Workspace directory")
                     .focused(focused_field == 1);
@@ -74,7 +74,7 @@ impl RepoStep {
                 }
                 let check_area = ratatui::layout::Rect {
                     x: 2,
-                    y: y_start + 5,
+                    y: y_start + 8,
                     width: area.width - 4,
                     height: 4,
                 };

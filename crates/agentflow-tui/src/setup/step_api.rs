@@ -175,10 +175,10 @@ impl ApiStep {
                         .focused(focused_field == i)
                         .optional(!field.required);
                     widget.render(
-                        Rect::new(input_area.x, current_y, input_area.width, 1),
+                        Rect::new(input_area.x, current_y, input_area.width, 3),
                         f.buffer_mut(),
                     );
-                    current_y += 2;
+                    current_y += 4;
                 }
 
                 let help_text = "Tab: switch | Enter: continue | Esc: cancel";

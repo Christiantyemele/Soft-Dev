@@ -42,12 +42,12 @@ impl ProxyStep {
                 ];
 
                 for (i, (input, label, optional)) in fields.iter().enumerate() {
-                    let y = y_start + (i as u16) * 2;
+                    let y = y_start + (i as u16) * 4;
                     let widget_area = ratatui::layout::Rect {
                         x: 2,
                         y,
                         width: area.width - 4,
-                        height: 1,
+                        height: 3,
                     };
                     let widget = InputWidget::new(input, label)
                         .masked(i == 1 || i == 3)
