@@ -1,17 +1,23 @@
-pub const LOGO: &str = r#"
+pub const LOGO_LINES: &[&str] = &[
+    "",
+    "",
+    "              ╭──────────────────────────────────────╮",
+    "              │                                      │",
+    "              │    ███████╗██████╗ ██╗  ██╗███████╗  │",
+    "              │    ██╔════╝██╔══██╗██║  ██║██╔════╝  │",
+    "              │    █████╗  ██████╔╝███████║█████╗    │",
+    "              │    ██╔══╝  ██╔═══╝ ██╔══██║██╔══╝    │",
+    "              │    ██║     ██║     ██║  ██║███████╗  │",
+    "              │    ╚═╝     ╚═╝     ╚═╝  ╚═╝╚══════╝  │",
+    "              │                                      │",
+    "              │    ═══════════════════════════════   │",
+    "              │                                      │",
+    "              │      ◇ Autonomous AI Orchestration  │",
+    "              │                                      │",
+    "              ╰──────────────────────────────────────╯",
+];
 
-  +----------------------------------------------------------+
-  |                                                          |
-  |   OOOOO   PPPP    EEEEE  N   N  FFFFF  L   OOOOO  W   W  |
-  |  O     O  P   P   E      NN  N  F      L  O     O W   W  |
-  |  O     O  PPPP    EEEE   N N N  FFFF   L  O     O W W W  |
-  |  O     O  P       E      N  NN  F      L  O     O WW WW  |
-  |   OOOOO   P       EEEEE  N   N  F      LLL OOOOO  W   W  |
-  |                                                          |
-  +----------------------------------------------------------+
-"#;
-
-pub const TAGLINE: &str = "Autonomous AI Development Team Orchestration";
+pub const TAGLINE: &str = "Configure your AI development team in minutes";
 
 pub fn version_string() -> String {
     let git_hash = std::env::var("GIT_HASH")
@@ -22,12 +28,12 @@ pub fn version_string() -> String {
         &git_hash
     };
     format!(
-        "OpenFlow {} ({})",
+        "v{} · {}",
         env!("CARGO_PKG_VERSION"),
         short_hash
     )
 }
 
 pub fn get_logo_lines() -> Vec<String> {
-    LOGO.lines().map(|s| s.to_string()).collect()
+    LOGO_LINES.iter().map(|s| s.to_string()).collect()
 }

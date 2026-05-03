@@ -1,12 +1,12 @@
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::io;
 
-use crate::util::logo::{get_logo_lines, version_string, TAGLINE};
+use crate::util::logo::{get_logo_lines, version_string};
 use crate::util::theme::Theme;
 
 pub struct WelcomeStep;
@@ -21,18 +21,20 @@ impl WelcomeStep {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
         _theme: &Theme,
     ) -> Result<()> {
+        let theme = Theme::default();
+        
         terminal.draw(|f| {
             let area = f.area();
             let logo_lines = get_logo_lines();
 
-            let total_content_height = logo_lines.len() as u16 + 5;
-            let start_y = if area.height > total_content_height {
-                (area.height - total_content_height) / 2
-            } else {
-                0
-            };
-
-            let content_area = Rect::new(0, start_y, area.width, total_content_height);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(logo_lines.len() as u16 + 2),
+                    Constraint::Length(2),
+                ])
+                .split(area);
 
             let mut lines: Vec<Line> = Vec::new();
 
@@ -40,33 +42,24 @@ impl WelcomeStep {
                 lines.push(Line::styled(
                     logo_line.clone(),
                     Style::default()
-                        .fg(Theme::default().accent())
+                        .fg(theme.accent())
                         .add_modifier(Modifier::BOLD),
                 ));
             }
 
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(
-                TAGLINE.to_string(),
-                Style::default().fg(Theme::default().muted()),
-            ));
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(
-                version_string(),
-                Style::default().fg(Theme::default().fg()),
-            ));
-            lines.push(Line::raw(""));
-
             let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
-            paragraph.render(content_area, f.buffer_mut());
+            paragraph.render(chunks[1], f.buffer_mut());
 
-            let help_line = Line::styled(
-                "Press Enter to start setup...",
-                Style::default().fg(Theme::default().muted()),
-            );
-            let help_para = Paragraph::new(help_line).alignment(Alignment::Center);
-            let help_area = Rect::new(0, area.height - 2, area.width, 1);
-            help_para.render(help_area, f.buffer_mut());
+            let version = version_string();
+            let footer = Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(version, Style::default().fg(theme.muted())),
+                Span::styled("  │  ", Style::default().fg(theme.border())),
+                Span::styled("Press Enter to start", Style::default().fg(theme.fg())),
+                Span::styled("  ", Style::default()),
+            ]);
+            let footer_para = Paragraph::new(footer).alignment(Alignment::Center);
+            footer_para.render(chunks[2], f.buffer_mut());
         })?;
 
         loop {
