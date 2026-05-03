@@ -78,8 +78,8 @@ impl GitHubStep {
                         Constraint::Length(2),
                         Constraint::Length(1),
                         Constraint::Length(1),
-                        Constraint::Min(6),
-                        Constraint::Length(2),
+                        Constraint::Min(1),
+                        Constraint::Length(1),
                     ])
                     .split(area);
 
@@ -108,9 +108,24 @@ impl GitHubStep {
 
                 let input_area = Rect::new(chunks[3].x, chunks[3].y, chunks[3].width, chunks[3].height);
 
+                let field_height = 3u16;
+                let field_spacing = 0u16;
+                let total_per_field = field_height + field_spacing;
+                
+                let visible_count = ((input_area.height) / total_per_field).max(1) as usize;
+                let scroll_offset = focused_field.saturating_sub(visible_count.saturating_sub(1));
+
                 let mut current_y = input_area.y;
 
                 for (i, field) in fields.iter().enumerate() {
+                    if i < scroll_offset || i >= scroll_offset + visible_count {
+                        continue;
+                    }
+                    
+                    if current_y + field_height > input_area.y + input_area.height {
+                        break;
+                    }
+
                     let label = if field.required {
                         format!("{} (required)", field.label)
                     } else {
@@ -122,19 +137,30 @@ impl GitHubStep {
                         .focused(focused_field == i)
                         .optional(!field.required);
                     widget.render(
-                        Rect::new(input_area.x, current_y, input_area.width, 3),
+                        Rect::new(input_area.x, current_y, input_area.width, field_height),
                         f.buffer_mut(),
                     );
-                    current_y += 4;
+                    current_y += total_per_field;
                 }
 
-                let help_text = "Tab: switch | Enter: continue | Esc: cancel";
-                let help_line = Line::styled(
-                    help_text,
-                    Style::default().fg(theme.muted()),
-                );
-                let help_para = Paragraph::new(help_line).alignment(Alignment::Center);
-                help_para.render(chunks[4], f.buffer_mut());
+                if fields.len() > visible_count {
+                    let scroll_hint = format!("Field {}/{} - Tab/↑↓ to navigate", focused_field + 1, fields.len());
+                    let help_text = format!("Enter: continue | Esc: cancel | {}", scroll_hint);
+                    let help_line = Line::styled(
+                        help_text,
+                        Style::default().fg(theme.muted()),
+                    );
+                    let help_para = Paragraph::new(help_line).alignment(Alignment::Center);
+                    help_para.render(chunks[4], f.buffer_mut());
+                } else {
+                    let help_text = "Tab/↑↓: switch | Enter: continue | Esc: cancel";
+                    let help_line = Line::styled(
+                        help_text,
+                        Style::default().fg(theme.muted()),
+                    );
+                    let help_para = Paragraph::new(help_line).alignment(Alignment::Center);
+                    help_para.render(chunks[4], f.buffer_mut());
+                }
             })?;
 
             if crossterm::event::poll(std::time::Duration::from_millis(100))? {
@@ -145,6 +171,16 @@ impl GitHubStep {
                             focused_field = (focused_field + 1) % total_fields;
                         }
                         KeyCode::BackTab => {
+                            focused_field = if focused_field == 0 {
+                                total_fields - 1
+                            } else {
+                                focused_field - 1
+                            };
+                        }
+                        KeyCode::Down => {
+                            focused_field = (focused_field + 1) % total_fields;
+                        }
+                        KeyCode::Up => {
                             focused_field = if focused_field == 0 {
                                 total_fields - 1
                             } else {
