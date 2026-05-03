@@ -1,0 +1,192 @@
+use anyhow::Result;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::prelude::*;
+use ratatui::widgets::Paragraph;
+use ratatui::Terminal;
+use std::io;
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
+
+use crate::setup::SetupConfig;
+use crate::util::theme::Theme;
+use crate::widgets::input::InputWidget;
+
+struct GitHubField {
+    label: String,
+    env_key: String,
+    input: Input,
+    required: bool,
+}
+
+pub struct GitHubStep;
+
+impl GitHubStep {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub async fn render(
+        &self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        theme: &Theme,
+        config: &mut SetupConfig,
+    ) -> Result<()> {
+        let mut fields: Vec<GitHubField> = Vec::new();
+
+        let registry_path = std::env::current_dir()?
+            .join("orchestration")
+            .join("agent")
+            .join("registry.json");
+
+        if registry_path.exists() {
+            if let Ok(registry) = config::Registry::load(&registry_path) {
+                for entry in registry.active_agents() {
+                    let env_key = entry.github_token_env.clone()
+                        .unwrap_or_else(|| "GITHUB_PERSONAL_ACCESS_TOKEN".to_string());
+                    let existing = std::env::var(&env_key).unwrap_or_default();
+                    fields.push(GitHubField {
+                        label: format!("{} GitHub PAT", entry.id.to_uppercase()),
+                        env_key,
+                        input: Input::new(existing),
+                        required: true,
+                    });
+                }
+            }
+        }
+
+        if fields.is_empty() {
+            fields.push(GitHubField {
+                label: "GitHub PAT".to_string(),
+                env_key: "GITHUB_PERSONAL_ACCESS_TOKEN".to_string(),
+                input: Input::new(config.github_pat.clone()),
+                required: true,
+            });
+        }
+
+        let total_fields = fields.len();
+        let mut focused_field: usize = 0;
+
+        loop {
+            terminal.draw(|f| {
+                let area = f.area();
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(2)
+                    .constraints([
+                        Constraint::Length(2),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Min(6),
+                        Constraint::Length(2),
+                    ])
+                    .split(area);
+
+                let title_line = Line::styled(
+                    "┌  OpenFlow Setup",
+                    Style::default()
+                        .fg(theme.accent())
+                        .add_modifier(Modifier::BOLD),
+                );
+                let title_para = Paragraph::new(title_line);
+                title_para.render(chunks[0], f.buffer_mut());
+
+                let sep_line = Line::styled(
+                    "│",
+                    Style::default().fg(theme.border()),
+                );
+                let sep_para = Paragraph::new(sep_line);
+                sep_para.render(chunks[1], f.buffer_mut());
+
+                let prompt_line = Line::styled(
+                    "◆  GitHub Authentication",
+                    Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
+                );
+                let prompt_para = Paragraph::new(prompt_line);
+                prompt_para.render(chunks[2], f.buffer_mut());
+
+                let input_area = Rect::new(chunks[3].x, chunks[3].y, chunks[3].width, chunks[3].height);
+
+                let mut current_y = input_area.y;
+
+                for (i, field) in fields.iter().enumerate() {
+                    let label = if field.required {
+                        format!("{} (required)", field.label)
+                    } else {
+                        format!("{} (optional)", field.label)
+                    };
+
+                    let widget = InputWidget::new(&field.input, &label)
+                        .masked(true)
+                        .focused(focused_field == i)
+                        .optional(!field.required);
+                    widget.render(
+                        Rect::new(input_area.x, current_y, input_area.width, 1),
+                        f.buffer_mut(),
+                    );
+                    current_y += 2;
+                }
+
+                let help_text = "Tab: switch | Enter: continue | Esc: cancel";
+                let help_line = Line::styled(
+                    help_text,
+                    Style::default().fg(theme.muted()),
+                );
+                let help_para = Paragraph::new(help_line).alignment(Alignment::Center);
+                help_para.render(chunks[4], f.buffer_mut());
+            })?;
+
+            if crossterm::event::poll(std::time::Duration::from_millis(100))? {
+                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                    use crossterm::event::KeyCode;
+                    match key.code {
+                        KeyCode::Tab => {
+                            focused_field = (focused_field + 1) % total_fields;
+                        }
+                        KeyCode::BackTab => {
+                            focused_field = if focused_field == 0 {
+                                total_fields - 1
+                            } else {
+                                focused_field - 1
+                            };
+                        }
+                        KeyCode::Enter => {
+                            let all_required_filled = fields.iter()
+                                .filter(|f| f.required)
+                                .all(|f| !f.input.value().is_empty());
+
+                            if all_required_filled {
+                                for field in &fields {
+                                    let value = field.input.value().to_string();
+                                    match field.env_key.as_str() {
+                                        "GITHUB_PERSONAL_ACCESS_TOKEN" => {
+                                            config.github_pat = value;
+                                        }
+                                        _ => {
+                                            if field.env_key.starts_with("AGENT_") {
+                                                config.agent_tokens.push((field.env_key.clone(), value));
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            return Err(anyhow::anyhow!("Setup cancelled"));
+                        }
+                        _ => {
+                            let event = crossterm::event::Event::Key(key);
+                            if focused_field < fields.len() {
+                                fields[focused_field].input.handle_event(&event);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
