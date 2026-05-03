@@ -30,9 +30,10 @@ impl WelcomeStep {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(logo_lines.len() as u16 + 2),
+                    Constraint::Percentage(38),
+                    Constraint::Length(logo_lines.len() as u16),
                     Constraint::Length(2),
+                    Constraint::Percentage(38),
                 ])
                 .split(area);
 
@@ -41,22 +42,17 @@ impl WelcomeStep {
             for logo_line in &logo_lines {
                 lines.push(Line::styled(
                     logo_line.clone(),
-                    Style::default()
-                        .fg(theme.accent())
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme.accent()),
                 ));
             }
 
             let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
             paragraph.render(chunks[1], f.buffer_mut());
 
-            let version = version_string();
             let footer = Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(version, Style::default().fg(theme.muted())),
-                Span::styled("  │  ", Style::default().fg(theme.border())),
-                Span::styled("Press Enter to start", Style::default().fg(theme.fg())),
-                Span::styled("  ", Style::default()),
+                Span::styled(version_string(), Style::default().fg(theme.muted())),
+                Span::raw("  ·  "),
+                Span::styled("Press Enter to begin", Style::default().fg(theme.fg())),
             ]);
             let footer_para = Paragraph::new(footer).alignment(Alignment::Center);
             footer_para.render(chunks[2], f.buffer_mut());
