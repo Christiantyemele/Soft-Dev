@@ -126,44 +126,36 @@ async function main() {
     try {
         await download(downloadUrl, tmpFile);
         await extractTarGz(tmpFile, BIN_DIR);
-
-        // Rename binaries to match expected names
-        const binaries = ['agentflow', 'agentflow-setup', 'agentflow-dashboard', 'agentflow-doctor'];
-        for (const bin of binaries) {
-            const src = path.join(BIN_DIR, bin);
-            const dst = path.join(BIN_DIR, `${bin}-bin`);
-            if (fs.existsSync(src)) {
-                fs.renameSync(src, dst);
-                fs.chmodSync(dst, 0o755);
-            }
-        }
-
-        fs.unlinkSync(tmpFile);
-        console.log(`[openflows] Installation complete!`);
     } catch (err) {
-        console.error(`[openflows] Failed to download binary: ${err.message}`);
-        console.error('[openflows] Falling back to building from source...');
-
-        // Fallback: build from source
-        try {
-            execSync('cargo build --release -p openflows', { stdio: 'inherit', cwd: path.join(__dirname, '..') });
-            const releaseDir = path.join(__dirname, '..', 'target', 'release');
-            const binaries = ['openflows', 'openflows-setup', 'openflows-dashboard', 'openflows-doctor'];
-            for (const bin of binaries) {
-                const src = path.join(releaseDir, bin);
-                const dst = path.join(BIN_DIR, `${bin}-bin`);
-                if (fs.existsSync(src)) {
-                    fs.copyFileSync(src, dst);
-                    fs.chmodSync(dst, 0o755);
-                }
-            }
-            console.log('[openflows] Built from source successfully!');
-        } catch (buildErr) {
-            console.error(`[openflows] Build failed: ${buildErr.message}`);
-            console.error('[openflows] Please ensure Rust is installed: https://rustup.rs/');
-            process.exit(1);
+        // For x86_64 Linux, try musl fallback
+        if (platform === 'x86_64-unknown-linux-gnu') {
+            const muslArchiveName = `openflows-${tag}-x86_64-unknown-linux-musl.tar.gz`;
+            const muslDownloadUrl = `https://github.com/${REPO}/releases/download/${tag}/${muslArchiveName}`;
+            const muslTmpFile = path.join(os.tmpdir(), muslArchiveName);
+            console.log(`[@the-agenticflow/openflows] Trying musl fallback...`);
+            await download(muslDownloadUrl, muslTmpFile);
+            await extractTarGz(muslTmpFile, BIN_DIR);
+            fs.unlinkSync(muslTmpFile);
+        } else {
+            throw err;
         }
     }
+
+    // Rename binaries to match expected names
+    const binaries = ['agentflow', 'agentflow-setup', 'agentflow-dashboard', 'agentflow-doctor'];
+    for (const bin of binaries) {
+        const src = path.join(BIN_DIR, bin);
+        const dst = path.join(BIN_DIR, `${bin}-bin`);
+        if (fs.existsSync(src)) {
+            fs.renameSync(src, dst);
+            fs.chmodSync(dst, 0o755);
+        }
+    }
+
+    if (fs.existsSync(tmpFile)) {
+        fs.unlinkSync(tmpFile);
+    }
+    console.log(`[openflows] Installation complete!`);
 }
 
 main();
