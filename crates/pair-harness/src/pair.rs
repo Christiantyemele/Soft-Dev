@@ -356,6 +356,7 @@ impl ForgeSentinelPair {
     pub fn new(config: PairConfig) -> Self {
         // Use the project_root from config (contains .git)
         let project_root = config.project_root.clone();
+        let cli_backend = config.cli_backend;
 
         Self {
             worktree: WorktreeManager::new(&project_root),
@@ -365,14 +366,17 @@ impl ForgeSentinelPair {
                     &config.github_token,
                     Some(redis_url.clone()),
                     proxy_url,
-                ),
+                ).with_default_backend(cli_backend),
                 (Some(redis_url), None) => {
                     ProcessManager::with_redis(&config.github_token, redis_url)
+                        .with_default_backend(cli_backend)
                 }
                 (None, Some(proxy_url)) => {
                     ProcessManager::with_proxy(&config.github_token, None, proxy_url)
+                        .with_default_backend(cli_backend)
                 }
-                (None, None) => ProcessManager::new(&config.github_token),
+                (None, None) => ProcessManager::new(&config.github_token)
+                    .with_default_backend(cli_backend),
             },
             reset: ResetManager::new(config.shared.clone(), config.max_resets),
             watchdog: Watchdog::new(config.shared.clone(), config.watchdog_timeout_secs),
