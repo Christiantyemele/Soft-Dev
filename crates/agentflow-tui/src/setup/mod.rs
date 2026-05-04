@@ -3,6 +3,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
 
+pub mod step_agents;
 pub mod step_api;
 pub mod step_done;
 pub mod step_env;
@@ -15,6 +16,7 @@ pub mod step_repo;
 pub mod step_security;
 pub mod step_welcome;
 
+use step_agents::AgentsStep;
 use step_api::ApiStep;
 use step_done::DoneStep;
 use step_env::EnvStep;
@@ -26,6 +28,17 @@ use step_proxy::ProxyStep;
 use step_repo::RepoStep;
 use step_security::SecurityStep;
 use step_welcome::WelcomeStep;
+
+#[derive(Debug, Clone)]
+pub struct AgentConfig {
+    pub id: String,
+    pub cli: String,
+    pub active: bool,
+    pub instances: u32,
+    pub model_backend: Option<String>,
+    pub routing_key: Option<String>,
+    pub github_token_env: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SetupConfig {
@@ -43,6 +56,7 @@ pub struct SetupConfig {
     pub gateway_api_key: Option<String>,
     pub selected_provider: Option<String>,
     pub agent_tokens: Vec<(String, String)>,
+    pub agents: Vec<AgentConfig>,
 }
 
 impl Default for SetupConfig {
@@ -66,6 +80,7 @@ impl Default for SetupConfig {
             gateway_api_key: None,
             selected_provider: None,
             agent_tokens: Vec::new(),
+            agents: Vec::new(),
         }
     }
 }
@@ -133,6 +148,10 @@ async fn run_wizard_inner(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) 
     // Step 7: LLM API Key Input
     let api_step = ApiStep::new();
     api_step.render(&mut terminal, &theme, &mut config).await?;
+
+    // Step 7.5: Agent Configuration (instances, model backend, tokens)
+    let agents_step = AgentsStep::new();
+    agents_step.render(&mut terminal, &theme, &mut config).await?;
 
     // Step 8: Repository Config
     let repo_step = RepoStep::new();
@@ -205,58 +224,75 @@ pub fn write_env_file(config: &SetupConfig, project_dir: &std::path::Path) -> Re
     Ok(())
 }
 
-pub fn write_registry_file(_config: &SetupConfig, project_dir: &std::path::Path) -> Result<()> {
+pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) -> Result<()> {
     let registry_dir = project_dir.join("orchestration").join("agent");
     std::fs::create_dir_all(&registry_dir)?;
 
     let registry = config::Registry {
-        team: vec![
-            config::RegistryEntry {
-                id: "nexus".to_string(),
-                cli: "claude".to_string(),
-                active: true,
-                instances: 1,
-                model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
-                routing_key: Some("nexus-key".to_string()),
-                github_token_env: None,
-            },
-            config::RegistryEntry {
-                id: "forge".to_string(),
-                cli: "claude".to_string(),
-                active: true,
-                instances: 2,
-                model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
-                routing_key: Some("forge-key".to_string()),
-                github_token_env: None,
-            },
-            config::RegistryEntry {
-                id: "sentinel".to_string(),
-                cli: "claude".to_string(),
-                active: true,
-                instances: 1,
-                model_backend: Some("gemini/gemini-2.5-pro".to_string()),
-                routing_key: Some("sentinel-key".to_string()),
-                github_token_env: None,
-            },
-            config::RegistryEntry {
-                id: "vessel".to_string(),
-                cli: "claude".to_string(),
-                active: true,
-                instances: 1,
-                model_backend: Some("groq/llama-3.3-70b-versatile".to_string()),
-                routing_key: Some("vessel-key".to_string()),
-                github_token_env: None,
-            },
-            config::RegistryEntry {
-                id: "lore".to_string(),
-                cli: "claude".to_string(),
-                active: false,
-                instances: 1,
-                model_backend: Some("openai/gpt-4o-mini".to_string()),
-                routing_key: Some("lore-key".to_string()),
-                github_token_env: None,
-            },
-        ],
+        team: if config.agents.is_empty() {
+            // Default agents if none configured
+            vec![
+                config::RegistryEntry {
+                    id: "nexus".to_string(),
+                    cli: "claude".to_string(),
+                    active: true,
+                    instances: 1,
+                    model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
+                    routing_key: Some("nexus-key".to_string()),
+                    github_token_env: None,
+                },
+                config::RegistryEntry {
+                    id: "forge".to_string(),
+                    cli: "claude".to_string(),
+                    active: true,
+                    instances: 2,
+                    model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
+                    routing_key: Some("forge-key".to_string()),
+                    github_token_env: None,
+                },
+                config::RegistryEntry {
+                    id: "sentinel".to_string(),
+                    cli: "claude".to_string(),
+                    active: true,
+                    instances: 1,
+                    model_backend: Some("gemini/gemini-2.5-pro".to_string()),
+                    routing_key: Some("sentinel-key".to_string()),
+                    github_token_env: None,
+                },
+                config::RegistryEntry {
+                    id: "vessel".to_string(),
+                    cli: "claude".to_string(),
+                    active: true,
+                    instances: 1,
+                    model_backend: Some("groq/llama-3.3-70b-versatile".to_string()),
+                    routing_key: Some("vessel-key".to_string()),
+                    github_token_env: None,
+                },
+                config::RegistryEntry {
+                    id: "lore".to_string(),
+                    cli: "claude".to_string(),
+                    active: false,
+                    instances: 1,
+                    model_backend: Some("openai/gpt-4o-mini".to_string()),
+                    routing_key: Some("lore-key".to_string()),
+                    github_token_env: None,
+                },
+            ]
+        } else {
+            config
+                .agents
+                .iter()
+                .map(|agent| config::RegistryEntry {
+                    id: agent.id.clone(),
+                    cli: agent.cli.clone(),
+                    active: agent.active,
+                    instances: agent.instances,
+                    model_backend: agent.model_backend.clone(),
+                    routing_key: agent.routing_key.clone(),
+                    github_token_env: agent.github_token_env.clone(),
+                })
+                .collect()
+        },
     };
 
     let content = serde_json::to_string_pretty(&registry)?;

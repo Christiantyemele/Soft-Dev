@@ -34,23 +34,39 @@ impl GitHubStep {
     ) -> Result<()> {
         let mut fields: Vec<GitHubField> = Vec::new();
 
-        let registry_path = std::env::current_dir()?
-            .join("orchestration")
-            .join("agent")
-            .join("registry.json");
-
-        if registry_path.exists() {
-            if let Ok(registry) = config::Registry::load(&registry_path) {
-                for entry in registry.active_agents() {
-                    let env_key = entry.github_token_env.clone()
-                        .unwrap_or_else(|| "GITHUB_PERSONAL_ACCESS_TOKEN".to_string());
+        // Use configured agents from SetupConfig if available, otherwise fall back to registry file
+        if !config.agents.is_empty() {
+            for agent in &config.agents {
+                if agent.active {
+                    let env_key = format!("AGENT_{}_GITHUB_TOKEN", agent.id.to_uppercase());
                     let existing = std::env::var(&env_key).unwrap_or_default();
                     fields.push(GitHubField {
-                        label: format!("{} GitHub PAT", entry.id.to_uppercase()),
+                        label: format!("{} GitHub PAT", agent.id.to_uppercase()),
                         env_key,
                         input: Input::new(existing),
                         required: true,
                     });
+                }
+            }
+        } else {
+            let registry_path = std::env::current_dir()?
+                .join("orchestration")
+                .join("agent")
+                .join("registry.json");
+
+            if registry_path.exists() {
+                if let Ok(registry) = config::Registry::load(&registry_path) {
+                    for entry in registry.active_agents() {
+                        let env_key = entry.github_token_env.clone()
+                            .unwrap_or_else(|| "GITHUB_PERSONAL_ACCESS_TOKEN".to_string());
+                        let existing = std::env::var(&env_key).unwrap_or_default();
+                        fields.push(GitHubField {
+                            label: format!("{} GitHub PAT", entry.id.to_uppercase()),
+                            env_key,
+                            input: Input::new(existing),
+                            required: true,
+                        });
+                    }
                 }
             }
         }
@@ -191,6 +207,15 @@ impl GitHubStep {
                                         _ => {
                                             if field.env_key.starts_with("AGENT_") {
                                                 config.agent_tokens.push((field.env_key.clone(), value));
+                                                // Set the github_token_env on the corresponding agent
+                                                let agent_id = field.env_key
+                                                    .strip_prefix("AGENT_")
+                                                    .and_then(|s| s.strip_suffix("_GITHUB_TOKEN"))
+                                                    .map(|s| s.to_lowercase())
+                                                    .unwrap_or_default();
+                                                if let Some(agent) = config.agents.iter_mut().find(|a| a.id == agent_id) {
+                                                    agent.github_token_env = Some(field.env_key.clone());
+                                                }
                                             }
                                         }
                                     }
