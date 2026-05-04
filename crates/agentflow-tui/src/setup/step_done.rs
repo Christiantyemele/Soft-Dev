@@ -8,6 +8,7 @@ use std::io;
 use std::path::Path;
 
 use crate::setup::write_env_file;
+use crate::setup::write_registry_file;
 use crate::setup::SetupConfig;
 use crate::util::theme::Theme;
 use crate::widgets::check::{CheckList, CheckState};
@@ -27,6 +28,7 @@ impl DoneStep {
     ) -> Result<()> {
         let current_dir = std::env::current_dir()?;
         write_env_file(config, &current_dir)?;
+        write_registry_file(config, &current_dir)?;
 
         let registry_path = current_dir
             .join("orchestration")
@@ -122,9 +124,9 @@ impl DoneStep {
                 next_para.render(next_chunks[0], f.buffer_mut());
 
                 let steps = vec![
-                    Line::styled("  1. Review your .env file", theme.text_style()),
-                    Line::styled("  2. Run 'openflow-setup' to reconfigure", theme.text_style()),
-                    Line::styled("  3. Run 'cargo run --bin openflow' to start", theme.text_style()),
+                    Line::styled("  1. Review your .env and registry.json files", theme.text_style()),
+                    Line::styled("  2. Run 'openflows-setup' to reconfigure", theme.text_style()),
+                    Line::styled("  3. Run 'openflows' to start", theme.text_style()),
                 ];
                 let steps_para = Paragraph::new(steps);
                 steps_para.render(next_chunks[1], f.buffer_mut());

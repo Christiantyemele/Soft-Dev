@@ -204,3 +204,62 @@ pub fn write_env_file(config: &SetupConfig, project_dir: &std::path::Path) -> Re
     std::fs::write(project_dir.join(".env"), content)?;
     Ok(())
 }
+
+pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) -> Result<()> {
+    let registry_dir = project_dir.join("orchestration").join("agent");
+    std::fs::create_dir_all(&registry_dir)?;
+
+    let registry = config::Registry {
+        team: vec![
+            config::RegistryEntry {
+                id: "nexus".to_string(),
+                cli: "claude".to_string(),
+                active: true,
+                instances: 1,
+                model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
+                routing_key: Some("nexus-key".to_string()),
+                github_token_env: None,
+            },
+            config::RegistryEntry {
+                id: "forge".to_string(),
+                cli: "claude".to_string(),
+                active: true,
+                instances: 2,
+                model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
+                routing_key: Some("forge-key".to_string()),
+                github_token_env: None,
+            },
+            config::RegistryEntry {
+                id: "sentinel".to_string(),
+                cli: "claude".to_string(),
+                active: true,
+                instances: 1,
+                model_backend: Some("gemini/gemini-2.5-pro".to_string()),
+                routing_key: Some("sentinel-key".to_string()),
+                github_token_env: None,
+            },
+            config::RegistryEntry {
+                id: "vessel".to_string(),
+                cli: "claude".to_string(),
+                active: true,
+                instances: 1,
+                model_backend: Some("groq/llama-3.3-70b-versatile".to_string()),
+                routing_key: Some("vessel-key".to_string()),
+                github_token_env: None,
+            },
+            config::RegistryEntry {
+                id: "lore".to_string(),
+                cli: "claude".to_string(),
+                active: false,
+                instances: 1,
+                model_backend: Some("openai/gpt-4o-mini".to_string()),
+                routing_key: Some("lore-key".to_string()),
+                github_token_env: None,
+            },
+        ],
+    };
+
+    let content = serde_json::to_string_pretty(&registry)?;
+    std::fs::write(registry_dir.join("registry.json"), content)?;
+    Ok(())
+}
