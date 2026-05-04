@@ -40,7 +40,7 @@ impl AgentsStep {
         config: &mut SetupConfig,
     ) -> Result<()> {
         let mut agents: Vec<AgentConfig> = Vec::new();
-        let current_state: Option<AgentConfigState>;
+        let mut current_state: Option<AgentConfigState>;
 
         // Check if registry exists to pre-populate
         let registry_path = std::env::current_dir()?
