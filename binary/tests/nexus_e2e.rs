@@ -55,7 +55,7 @@ async fn test_nexus_e2e_mocked() -> Result<()> {
     std::env::set_var("ANTHROPIC_API_KEY", "test-key");
     std::env::set_var("ANTHROPIC_API_URL", &url);
     std::env::set_var("GITHUB_MCP_CMD", "python3 ../scripts/mock_mcp.py");
-    std::env::set_var("AGENT_NEXUS_GITHUB_TOKEN", "test-token");
+    std::env::set_var("GITHUB_PERSONAL_ACCESS_TOKEN", "test-token");
 
     // 3. Initialize SharedStore
     let store = SharedStore::new_in_memory();
