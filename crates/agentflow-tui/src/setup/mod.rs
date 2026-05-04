@@ -205,7 +205,7 @@ pub fn write_env_file(config: &SetupConfig, project_dir: &std::path::Path) -> Re
     Ok(())
 }
 
-pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) -> Result<()> {
+pub fn write_registry_file(_config: &SetupConfig, project_dir: &std::path::Path) -> Result<()> {
     let registry_dir = project_dir.join("orchestration").join("agent");
     std::fs::create_dir_all(&registry_dir)?;
 
