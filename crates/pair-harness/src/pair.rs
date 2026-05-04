@@ -366,7 +366,8 @@ impl ForgeSentinelPair {
                     &config.github_token,
                     Some(redis_url.clone()),
                     proxy_url,
-                ).with_default_backend(cli_backend),
+                )
+                .with_default_backend(cli_backend),
                 (Some(redis_url), None) => {
                     ProcessManager::with_redis(&config.github_token, redis_url)
                         .with_default_backend(cli_backend)
@@ -375,8 +376,9 @@ impl ForgeSentinelPair {
                     ProcessManager::with_proxy(&config.github_token, None, proxy_url)
                         .with_default_backend(cli_backend)
                 }
-                (None, None) => ProcessManager::new(&config.github_token)
-                    .with_default_backend(cli_backend),
+                (None, None) => {
+                    ProcessManager::new(&config.github_token).with_default_backend(cli_backend)
+                }
             },
             reset: ResetManager::new(config.shared.clone(), config.max_resets),
             watchdog: Watchdog::new(config.shared.clone(), config.watchdog_timeout_secs),

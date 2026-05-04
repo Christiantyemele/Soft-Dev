@@ -1422,9 +1422,12 @@ impl BatchNode for ForgePairNode {
         // Resolve CLI backend from registry (respects DEFAULT_CLI env var)
         let cli_backend = if let Some(registry_path) = &self.registry_path {
             let registry = config::Registry::load(registry_path)?;
-            let base_id = worker_id.rfind('-').map(|i| &worker_id[..i]).unwrap_or(&worker_id);
+            let base_id = worker_id
+                .rfind('-')
+                .map(|i| &worker_id[..i])
+                .unwrap_or(&worker_id);
             info!(worker_id, base_id, default_cli = ?registry.default_cli, "Resolving CLI backend from registry");
-            
+
             // Use the new resolve_cli_backend method which respects:
             // 1. Agent-specific `cli` field (highest priority)
             // 2. DEFAULT_CLI environment variable
@@ -1432,7 +1435,7 @@ impl BatchNode for ForgePairNode {
             // 4. Hardcoded "claude" fallback
             let backend = registry.resolve_cli_backend(&worker_id);
             info!(worker_id, base_id, ?backend, "CLI backend resolved");
-            
+
             // Convert config::CliBackend to pair_harness::CliBackend
             match backend {
                 config::CliBackend::Claude => pair_harness::types::CliBackend::Claude,
@@ -1442,9 +1445,13 @@ impl BatchNode for ForgePairNode {
             // No registry - check DEFAULT_CLI env var, then fallback to default
             let backend = std::env::var(config::DEFAULT_CLI_ENV_VAR)
                 .ok()
-                .map(|s| config::CliBackend::from_str(&s))
+                .map(|s| config::CliBackend::parse(&s))
                 .unwrap_or_default();
-            info!(worker_id, ?backend, "No registry path, using CLI backend from env or default");
+            info!(
+                worker_id,
+                ?backend,
+                "No registry path, using CLI backend from env or default"
+            );
             match backend {
                 config::CliBackend::Claude => pair_harness::types::CliBackend::Claude,
                 config::CliBackend::Codex => pair_harness::types::CliBackend::Codex,

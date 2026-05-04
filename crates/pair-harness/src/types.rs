@@ -15,14 +15,22 @@ pub enum CliBackend {
     Codex,
 }
 
-impl CliBackend {
-    /// Parse from string, with fallback to default.
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl std::str::FromStr for CliBackend {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "codex" => CliBackend::Codex,
             "claude" => CliBackend::Claude,
             _ => CliBackend::Claude, // Default fallback
-        }
+        })
+    }
+}
+
+impl CliBackend {
+    /// Parse from string, with fallback to default.
+    pub fn parse(s: &str) -> Self {
+        s.parse().unwrap_or(CliBackend::Claude)
     }
 
     /// Convert to string for display.

@@ -18,14 +18,22 @@ pub enum CliBackend {
     Codex,
 }
 
-impl CliBackend {
-    /// Parse from string, with fallback to default.
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl std::str::FromStr for CliBackend {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "codex" => CliBackend::Codex,
             "claude" => CliBackend::Claude,
             _ => CliBackend::Claude, // Default fallback
-        }
+        })
+    }
+}
+
+impl CliBackend {
+    /// Parse from string, with fallback to default.
+    pub fn parse(s: &str) -> Self {
+        s.parse().unwrap_or(CliBackend::Claude)
     }
 
     /// Convert to string for display.
@@ -80,7 +88,7 @@ impl RegistryEntry {
         } else {
             &self.cli
         };
-        CliBackend::from_str(cli)
+        CliBackend::parse(cli)
     }
 }
 
@@ -93,11 +101,11 @@ impl Registry {
         // Check environment variable first
         if let Ok(env_cli) = std::env::var(DEFAULT_CLI_ENV_VAR) {
             if !env_cli.is_empty() {
-                return CliBackend::from_str(&env_cli);
+                return CliBackend::parse(&env_cli);
             }
         }
         // Fall back to registry default_cli
-        CliBackend::from_str(&self.default_cli)
+        CliBackend::parse(&self.default_cli)
     }
 
     /// Resolve CLI backend for a specific agent, respecting priority:
@@ -111,7 +119,7 @@ impl Registry {
             Some(entry) => {
                 // If agent has explicit cli field, use it
                 if !entry.cli.is_empty() {
-                    return CliBackend::from_str(&entry.cli);
+                    return CliBackend::parse(&entry.cli);
                 }
                 // Otherwise use effective default (env var > registry default)
                 self.effective_default_cli()
@@ -301,11 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_backend_from_str() {
-        assert_eq!(CliBackend::from_str("claude"), CliBackend::Claude);
-        assert_eq!(CliBackend::from_str("CODEX"), CliBackend::Codex);
-        assert_eq!(CliBackend::from_str("Codex"), CliBackend::Codex);
-        assert_eq!(CliBackend::from_str("unknown"), CliBackend::Claude); // fallback
+    fn test_cli_backend_parse() {
+        assert_eq!(CliBackend::parse("claude"), CliBackend::Claude);
+        assert_eq!(CliBackend::parse("CODEX"), CliBackend::Codex);
+        assert_eq!(CliBackend::parse("Codex"), CliBackend::Codex);
+        assert_eq!(CliBackend::parse("unknown"), CliBackend::Claude); // fallback
     }
 
     #[test]
@@ -318,20 +326,20 @@ mod tests {
     fn test_registry_with_mixed_cli_backends() {
         let f = write_temp(sample_registry_with_codex());
         let reg = Registry::load(f.path()).unwrap();
-        
+
         // Check default_cli
         assert_eq!(reg.default_cli, "claude");
-        
+
         // Check individual agents
         let nexus = reg.get("nexus").unwrap();
         assert_eq!(nexus.cli_backend(&reg.default_cli), CliBackend::Codex);
-        
+
         let forge = reg.get("forge").unwrap();
         assert_eq!(forge.cli_backend(&reg.default_cli), CliBackend::Codex);
-        
+
         let sentinel = reg.get("sentinel").unwrap();
         assert_eq!(sentinel.cli_backend(&reg.default_cli), CliBackend::Claude);
-        
+
         let lore = reg.get("lore").unwrap();
         assert_eq!(lore.cli_backend(&reg.default_cli), CliBackend::Codex);
     }
@@ -347,11 +355,11 @@ mod tests {
         }"#;
         let f = write_temp(json);
         let reg = Registry::load(f.path()).unwrap();
-        
+
         // nexus has empty cli, should use default
         let nexus = reg.get("nexus").unwrap();
         assert_eq!(nexus.cli_backend(&reg.default_cli), CliBackend::Codex);
-        
+
         // forge has explicit claude
         let forge = reg.get("forge").unwrap();
         assert_eq!(forge.cli_backend(&reg.default_cli), CliBackend::Claude);
@@ -383,11 +391,11 @@ mod tests {
         // When DEFAULT_CLI env var is set, it should override registry default_cli
         let f = write_temp(sample_registry_json());
         let reg = Registry::load(f.path()).unwrap();
-        
+
         // Set env var to codex
         std::env::set_var(DEFAULT_CLI_ENV_VAR, "codex");
         assert_eq!(reg.effective_default_cli(), CliBackend::Codex);
-        
+
         // Clean up
         std::env::remove_var(DEFAULT_CLI_ENV_VAR);
     }
@@ -397,10 +405,10 @@ mod tests {
         // Agent-specific cli field should take highest priority
         let f = write_temp(sample_registry_with_codex());
         let reg = Registry::load(f.path()).unwrap();
-        
+
         // nexus has cli: "codex" in registry
         assert_eq!(reg.resolve_cli_backend("nexus"), CliBackend::Codex);
-        
+
         // sentinel has cli: "claude" in registry
         assert_eq!(reg.resolve_cli_backend("sentinel"), CliBackend::Claude);
     }
@@ -417,16 +425,16 @@ mod tests {
         }"#;
         let f = write_temp(json);
         let reg = Registry::load(f.path()).unwrap();
-        
+
         // Set env var to codex
         std::env::set_var(DEFAULT_CLI_ENV_VAR, "codex");
-        
+
         // nexus has empty cli, should use env var (codex)
         assert_eq!(reg.resolve_cli_backend("nexus"), CliBackend::Codex);
-        
+
         // forge has explicit cli: "codex", should still use that (highest priority)
         assert_eq!(reg.resolve_cli_backend("forge"), CliBackend::Codex);
-        
+
         // Clean up
         std::env::remove_var(DEFAULT_CLI_ENV_VAR);
     }
@@ -443,18 +451,18 @@ mod tests {
         }"#;
         let f = write_temp(json);
         let reg = Registry::load(f.path()).unwrap();
-        
+
         // Case 1: agent-specific cli (highest priority)
         assert_eq!(reg.resolve_cli_backend("agent1"), CliBackend::Codex);
-        
+
         // Case 2: no agent-specific, no env var -> use registry default
         std::env::remove_var(DEFAULT_CLI_ENV_VAR);
         assert_eq!(reg.resolve_cli_backend("agent2"), CliBackend::Claude);
-        
+
         // Case 3: no agent-specific, env var set -> use env var
         std::env::set_var(DEFAULT_CLI_ENV_VAR, "codex");
         assert_eq!(reg.resolve_cli_backend("agent2"), CliBackend::Codex);
-        
+
         // Clean up
         std::env::remove_var(DEFAULT_CLI_ENV_VAR);
     }
@@ -464,7 +472,7 @@ mod tests {
         // Test that instance IDs (e.g., "forge-1") are normalized to base ID
         let f = write_temp(sample_registry_with_codex());
         let reg = Registry::load(f.path()).unwrap();
-        
+
         // forge has cli: "codex" in registry
         assert_eq!(reg.resolve_cli_backend("forge-1"), CliBackend::Codex);
         assert_eq!(reg.resolve_cli_backend("forge-2"), CliBackend::Codex);

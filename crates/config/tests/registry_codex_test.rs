@@ -89,18 +89,18 @@ fn test_registry_all_codex() {
 }
 
 #[test]
-fn test_cli_backend_from_str() {
-    assert_eq!(CliBackend::from_str("claude"), CliBackend::Claude);
-    assert_eq!(CliBackend::from_str("CLAUDE"), CliBackend::Claude);
-    assert_eq!(CliBackend::from_str("Claude"), CliBackend::Claude);
-    
-    assert_eq!(CliBackend::from_str("codex"), CliBackend::Codex);
-    assert_eq!(CliBackend::from_str("CODEX"), CliBackend::Codex);
-    assert_eq!(CliBackend::from_str("Codex"), CliBackend::Codex);
-    
+fn test_cli_backend_parse() {
+    assert_eq!(CliBackend::parse("claude"), CliBackend::Claude);
+    assert_eq!(CliBackend::parse("CLAUDE"), CliBackend::Claude);
+    assert_eq!(CliBackend::parse("Claude"), CliBackend::Claude);
+
+    assert_eq!(CliBackend::parse("codex"), CliBackend::Codex);
+    assert_eq!(CliBackend::parse("CODEX"), CliBackend::Codex);
+    assert_eq!(CliBackend::parse("Codex"), CliBackend::Codex);
+
     // Unknown values default to Claude
-    assert_eq!(CliBackend::from_str("unknown"), CliBackend::Claude);
-    assert_eq!(CliBackend::from_str(""), CliBackend::Claude);
+    assert_eq!(CliBackend::parse("unknown"), CliBackend::Claude);
+    assert_eq!(CliBackend::parse(""), CliBackend::Claude);
 }
 
 #[test]

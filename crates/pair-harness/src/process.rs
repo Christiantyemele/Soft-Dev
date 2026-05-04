@@ -267,9 +267,7 @@ impl ProcessManager {
             CliBackend::Codex => {
                 // Codex CLI flags
                 // codex --approval-mode full-auto -q "<prompt>"
-                cmd.arg("--approval-mode")
-                    .arg("full-auto")
-                    .arg("-q");
+                cmd.arg("--approval-mode").arg("full-auto").arg("-q");
             }
         }
 
@@ -282,7 +280,10 @@ impl ProcessManager {
             CliBackend::Claude => {
                 // Claude uses ANTHROPIC_API_KEY
                 if let Some(proxy_url) = &self.proxy_url {
-                    cmd.env("ANTHROPIC_BASE_URL", proxy_url.trim_end_matches("/v1").trim_end_matches('/'));
+                    cmd.env(
+                        "ANTHROPIC_BASE_URL",
+                        proxy_url.trim_end_matches("/v1").trim_end_matches('/'),
+                    );
                     if let Some(api_key) = &self.proxy_api_key {
                         cmd.env("ANTHROPIC_API_KEY", api_key);
                     }
@@ -297,7 +298,10 @@ impl ProcessManager {
                 // Codex uses OPENAI_API_KEY
                 if let Some(proxy_url) = &self.proxy_url {
                     // Codex expects OpenAI-compatible endpoint
-                    cmd.env("OPENAI_BASE_URL", proxy_url.trim_end_matches("/v1").trim_end_matches('/'));
+                    cmd.env(
+                        "OPENAI_BASE_URL",
+                        proxy_url.trim_end_matches("/v1").trim_end_matches('/'),
+                    );
                     if let Some(api_key) = &self.proxy_api_key {
                         cmd.env("OPENAI_API_KEY", api_key);
                     }
