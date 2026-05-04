@@ -94,7 +94,7 @@ function extractTarGz(tarPath, destDir) {
 
 async function main() {
     const platform = detectPlatform();
-    console.log(`[openflows] Downloading binary for ${platform}...`);
+    console.log(`[@the-agenticflow/openflows] Downloading binary for ${platform}...`);
 
     // Ensure bin directory exists
     if (!fs.existsSync(BIN_DIR)) {
@@ -128,7 +128,7 @@ async function main() {
         await extractTarGz(tmpFile, BIN_DIR);
 
         // Rename binaries to match expected names
-        const binaries = ['openflows', 'openflows-setup', 'openflows-dashboard', 'openflows-doctor'];
+        const binaries = ['agentflow', 'agentflow-setup', 'agentflow-dashboard', 'agentflow-doctor'];
         for (const bin of binaries) {
             const src = path.join(BIN_DIR, bin);
             const dst = path.join(BIN_DIR, `${bin}-bin`);
