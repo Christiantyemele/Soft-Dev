@@ -99,7 +99,22 @@ async fn main() -> Result<()> {
     store.set(KEY_PENDING_PRS, serde_json::json!([])).await;
 
     // 4. Build Flow - use orchestration/agent directory for personas
-    let orchestrator_dir = std::env::current_dir()?;
+    // Resolve orchestrator_dir: first try relative to the binary itself (npm install),
+    // then fall back to current directory (dev mode).
+    let orchestrator_dir = {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+        if let Some(ref dir) = exe_dir {
+            if dir.join("orchestration/agent/registry.json").exists() {
+                dir.clone()
+            } else {
+                std::env::current_dir()?
+            }
+        } else {
+            std::env::current_dir()?
+        }
+    };
     let registry_path = orchestrator_dir.join("orchestration/agent/registry.json");
     let nexus = Arc::new(NexusNode::new(
         orchestrator_dir.join("orchestration/agent/agents/nexus.agent.md"),
