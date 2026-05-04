@@ -23,7 +23,7 @@ source .env && ./scripts/start_proxy.sh &
 ./scripts/check_setup.sh
 
 # 4. Run the orchestration
-cargo run --bin agentflow
+cargo run --bin real_test
 ```
 
 ## Getting Started
@@ -156,7 +156,7 @@ AgentFlow/
 |   |-- pocketflow-core/     # Flow engine, shared store, routing
 |
 |-- binary/src/bin/
-    |-- agentflow.rs          # Main entry point
+    |-- real_test.rs          # Live orchestration entry point
     |-- demo.rs               # Mocked demonstration
 ```
 
@@ -284,7 +284,7 @@ The `STATUS.json` structure:
 | [`orchestration/agent/agents/nexus.agent.md`](orchestration/agent/agents/nexus.agent.md) | Orchestrator persona and workflow |
 | [`orchestration/agent/agents/forge.agent.md`](orchestration/agent/agents/forge.agent.md) | Builder persona and instructions |
 | [`orchestration/agent/registry.json`](orchestration/agent/registry.json) | Worker slot definitions |
-| [`binary/src/bin/agentflow.rs`](binary/src/bin/agentflow.rs) | Main entry point |
+| [`binary/src/bin/real_test.rs`](binary/src/bin/real_test.rs) | Main entry point |
 | [`crates/agent-forge/src/lib.rs`](crates/agent-forge/src/lib.rs) | Forge node implementation |
 
 ## Documentation
@@ -361,7 +361,7 @@ If your LLM gateway only supports the OpenAI Chat Completions format (`/v1/chat/
 ./scripts/start_proxy.sh
 
 # Terminal 2: Run orchestration
-cargo run --bin agentflow
+cargo run --bin real_test
 ```
 
 Configure `.env`:
