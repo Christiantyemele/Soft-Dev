@@ -1419,30 +1419,36 @@ impl BatchNode for ForgePairNode {
         // Resolve token for this specific worker
         let worker_token = self.resolve_token_for_worker(&worker_id)?;
 
-        // Resolve CLI backend from registry
+        // Resolve CLI backend from registry (respects DEFAULT_CLI env var)
         let cli_backend = if let Some(registry_path) = &self.registry_path {
             let registry = config::Registry::load(registry_path)?;
             let base_id = worker_id.rfind('-').map(|i| &worker_id[..i]).unwrap_or(&worker_id);
             info!(worker_id, base_id, default_cli = ?registry.default_cli, "Resolving CLI backend from registry");
-            let backend = registry.get(base_id)
-                .map(|entry| {
-                    let backend = entry.cli_backend(&registry.default_cli);
-                    info!(base_id, cli = ?entry.cli, resolved_backend = ?backend, "CLI backend resolved");
-                    // Convert config::CliBackend to pair_harness::CliBackend
-                    match backend {
-                        config::CliBackend::Claude => pair_harness::types::CliBackend::Claude,
-                        config::CliBackend::Codex => pair_harness::types::CliBackend::Codex,
-                    }
-                })
-                .unwrap_or_else(|| {
-                    warn!(base_id, "No registry entry found, using default CLI backend");
-                    pair_harness::types::CliBackend::default()
-                });
-            info!(worker_id, ?backend, "Using CLI backend");
-            backend
+            
+            // Use the new resolve_cli_backend method which respects:
+            // 1. Agent-specific `cli` field (highest priority)
+            // 2. DEFAULT_CLI environment variable
+            // 3. registry.json default_cli field
+            // 4. Hardcoded "claude" fallback
+            let backend = registry.resolve_cli_backend(&worker_id);
+            info!(worker_id, base_id, ?backend, "CLI backend resolved");
+            
+            // Convert config::CliBackend to pair_harness::CliBackend
+            match backend {
+                config::CliBackend::Claude => pair_harness::types::CliBackend::Claude,
+                config::CliBackend::Codex => pair_harness::types::CliBackend::Codex,
+            }
         } else {
-            warn!(worker_id, "No registry path set, using default CLI backend");
-            pair_harness::types::CliBackend::default()
+            // No registry - check DEFAULT_CLI env var, then fallback to default
+            let backend = std::env::var(config::DEFAULT_CLI_ENV_VAR)
+                .ok()
+                .map(|s| config::CliBackend::from_str(&s))
+                .unwrap_or_default();
+            info!(worker_id, ?backend, "No registry path, using CLI backend from env or default");
+            match backend {
+                config::CliBackend::Claude => pair_harness::types::CliBackend::Claude,
+                config::CliBackend::Codex => pair_harness::types::CliBackend::Codex,
+            }
         };
 
         let config = PairConfig::new(&worker_id, &ticket_id, &self.workspace_root, &worker_token)
