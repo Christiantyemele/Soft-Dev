@@ -10,7 +10,7 @@
       "routing_key": "nexus-key"
     },
     {
-      "id": "forge",
+      "id": "forge", 
       "cli": "codex",
       "active": true,
       "instances": 2,
