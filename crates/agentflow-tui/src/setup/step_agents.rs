@@ -10,19 +10,26 @@ use crate::setup::{AgentConfig, SetupConfig};
 use crate::util::theme::Theme;
 use crate::widgets::select::SelectableListState;
 
+const MODELS: &[&str] = &[
+    "anthropic/claude-sonnet-4-5",
+    "anthropic/claude-3-5-sonnet",
+    "gemini/gemini-2.5-pro",
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "groq/llama-3.3-70b-versatile",
+    "fireworks/accounts/fireworks/models/glm-5",
+];
+
 enum AgentConfigState {
-    SelectingAction {
+    MainList {
         agents: Vec<AgentConfig>,
         selected: usize,
+        focused_field: usize,
     },
-    ChoosingModel {
-        agent: AgentConfig,
-        models: Vec<String>,
+    ModelPicker {
+        agents: Vec<AgentConfig>,
+        agent_idx: usize,
         selected: usize,
-    },
-    ChoosingInstances {
-        agent: AgentConfig,
-        instances: u32,
     },
 }
 
@@ -40,9 +47,7 @@ impl AgentsStep {
         config: &mut SetupConfig,
     ) -> Result<()> {
         let mut agents: Vec<AgentConfig> = Vec::new();
-        let mut current_state: Option<AgentConfigState>;
 
-        // Check if registry exists to pre-populate
         let registry_path = std::env::current_dir()?
             .join("orchestration")
             .join("agent")
@@ -65,7 +70,6 @@ impl AgentsStep {
         }
 
         if agents.is_empty() {
-            // Default agents
             agents.push(AgentConfig {
                 id: "nexus".to_string(),
                 cli: "claude".to_string(),
@@ -113,34 +117,26 @@ impl AgentsStep {
             });
         }
 
-        // Start with action selection
-        current_state = Some(AgentConfigState::SelectingAction {
-            agents: agents.clone(),
+        let mut state = AgentConfigState::MainList {
+            agents,
             selected: 0,
-        });
+            focused_field: 0,
+        };
 
         loop {
-            match current_state.take() {
-                Some(AgentConfigState::SelectingAction { agents: current_agents, selected }) => {
-                    agents = current_agents;
-                    let agent_names: Vec<String> = agents.iter().map(|a| {
-                        let status = if a.active { "✓" } else { "✗" };
-                        format!("{} {} ({} instances)", status, a.id, a.instances)
-                    }).collect();
-                    
-                    let mut list_state = SelectableListState::new(agent_names.clone());
-                    list_state.selected = selected;
-
+            match &mut state {
+                AgentConfigState::MainList { agents, selected, focused_field } => {
                     loop {
                         terminal.draw(|f| {
                             let area = f.area();
                             let chunks = Layout::default()
                                 .direction(Direction::Vertical)
-                                .margin(3)
+                                .margin(2)
                                 .constraints([
                                     Constraint::Length(4),
-                                    Constraint::Min(8),
-                                    Constraint::Length(2),
+                                    Constraint::Length(1),
+                                    Constraint::Min(5),
+                                    Constraint::Length(3),
                                 ])
                                 .split(area);
 
@@ -155,51 +151,161 @@ impl AgentsStep {
                                 Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
                             );
                             let subtitle = Line::styled(
-                                "  Select agent to configure or press Enter to finish",
+                                "  Edit instances, model, and active status per agent",
                                 Style::default().fg(theme.muted()),
                             );
                             let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
                             title_para.render(inner_title, f.buffer_mut());
 
-                            let list_widget = crate::widgets::select::SelectableList::new(
-                                &list_state.items,
-                                list_state.selected,
-                            ).title("Select agent to configure");
-                            list_widget.render(chunks[1], f.buffer_mut());
-
-                            let help = Line::styled(
-                                "  ↑↓ navigate  │  Enter: select agent  │  Tab: finish configuration",
-                                Style::default().fg(theme.muted()),
+                            // Header row
+                            let header = Line::styled(
+                                format!(
+                                    "  {:<12} {:<10} {:<12} {}",
+                                    "AGENT", "ACTIVE", "INSTANCES", "MODEL BACKEND"
+                                ),
+                                Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
                             );
-                            let help_para = Paragraph::new(help);
-                            help_para.render(chunks[2], f.buffer_mut());
+                            let header_para = Paragraph::new(header);
+                            header_para.render(chunks[1], f.buffer_mut());
+
+                            // Agent rows
+                            let mut current_y = chunks[2].y;
+                            let row_height = 1u16;
+
+                            for (i, agent) in agents.iter().enumerate() {
+                                if current_y + row_height > chunks[2].y + chunks[2].height {
+                                    break;
+                                }
+
+                                let active_str = if agent.active { "✓ ON " } else { "✗ OFF" };
+                                let instances_str = format!("{}", agent.instances);
+                                let model_str = agent.model_backend.as_deref().unwrap_or("none");
+
+                                let is_selected = i == *selected;
+                                let row_style = if is_selected {
+                                    Style::default()
+                                        .fg(theme.accent())
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default().fg(theme.fg())
+                                };
+
+                                let prefix = if is_selected { "▶ " } else { "  " };
+
+                                // Build the row with field highlighting
+                                let mut row_text = String::new();
+                                row_text.push_str(&format!("{}{:<12}", prefix, agent.id));
+
+                                // Active field
+                                if is_selected && *focused_field == 0 {
+                                    row_text.push_str(&format!("[{}]", active_str));
+                                } else {
+                                    row_text.push_str(&format!(" {:<10}", active_str));
+                                }
+
+                                // Instances field
+                                if is_selected && *focused_field == 1 {
+                                    row_text.push_str(&format!("[{:<12}]", instances_str));
+                                } else {
+                                    row_text.push_str(&format!(" {:<12}", instances_str));
+                                }
+
+                                // Model field
+                                if is_selected && *focused_field == 2 {
+                                    row_text.push_str(&format!("[{}]", model_str));
+                                } else {
+                                    row_text.push_str(&format!(" {}", model_str));
+                                }
+
+                                let row_line = Line::styled(row_text, row_style);
+                                let row_para = Paragraph::new(row_line);
+                                row_para.render(
+                                    ratatui::layout::Rect::new(
+                                        chunks[2].x,
+                                        current_y,
+                                        chunks[2].width,
+                                        row_height,
+                                    ),
+                                    f.buffer_mut(),
+                                );
+                                current_y += row_height;
+                            }
+
+                            // Help text
+                            let help_lines = vec![
+                                Line::styled(
+                                    "  ↑↓ select agent  │  Tab: next field  │  Space: toggle active  │  ←→: adjust instances",
+                                    Style::default().fg(theme.muted()),
+                                ),
+                                Line::styled(
+                                    "  Enter on model: pick model  │  Shift+Tab: finish & continue",
+                                    Style::default().fg(theme.muted()),
+                                ),
+                            ];
+                            let help_para = Paragraph::new(help_lines);
+                            help_para.render(chunks[3], f.buffer_mut());
                         })?;
 
                         if crossterm::event::poll(std::time::Duration::from_millis(100))? {
                             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                                 use crossterm::event::KeyCode;
+                                use crossterm::event::KeyModifiers;
+
                                 match key.code {
-                                    KeyCode::Up => list_state.move_up(),
-                                    KeyCode::Down => list_state.move_down(),
+                                    KeyCode::Up => {
+                                        if *selected > 0 {
+                                            *selected -= 1;
+                                        }
+                                    }
+                                    KeyCode::Down => {
+                                        if *selected + 1 < agents.len() {
+                                            *selected += 1;
+                                        }
+                                    }
                                     KeyCode::Tab => {
+                                        if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                            config.agents = agents.clone();
+                                            return Ok(());
+                                        } else {
+                                            *focused_field = (*focused_field + 1) % 3;
+                                        }
+                                    }
+                                    KeyCode::BackTab => {
                                         config.agents = agents.clone();
                                         return Ok(());
                                     }
+                                    KeyCode::Char(' ') => {
+                                        if *focused_field == 0 {
+                                            agents[*selected].active = !agents[*selected].active;
+                                        }
+                                    }
+                                    KeyCode::Left => {
+                                        if *focused_field == 1 && agents[*selected].instances > 1 {
+                                            agents[*selected].instances -= 1;
+                                        }
+                                    }
+                                    KeyCode::Right => {
+                                        if *focused_field == 1 && agents[*selected].instances < 10 {
+                                            agents[*selected].instances += 1;
+                                        }
+                                    }
                                     KeyCode::Enter => {
-                                        current_state = Some(AgentConfigState::ChoosingModel {
-                                            agent: agents[list_state.selected].clone(),
-                                            models: vec![
-                                                "anthropic/claude-sonnet-4-5".to_string(),
-                                                "anthropic/claude-3-5-sonnet".to_string(),
-                                                "gemini/gemini-2.5-pro".to_string(),
-                                                "openai/gpt-4o".to_string(),
-                                                "openai/gpt-4o-mini".to_string(),
-                                                "groq/llama-3.3-70b-versatile".to_string(),
-                                                "fireworks/accounts/fireworks/models/glm-5".to_string(),
-                                            ],
-                                            selected: 0,
-                                        });
-                                        break;
+                                        if *focused_field == 2 {
+                                            let current_model = agents[*selected]
+                                                .model_backend
+                                                .as_deref()
+                                                .unwrap_or("");
+                                            let initial_idx = MODELS
+                                                .iter()
+                                                .position(|m| *m == current_model)
+                                                .unwrap_or(0);
+                                            state = AgentConfigState::ModelPicker {
+                                                agents: agents.clone(),
+                                                agent_idx: *selected,
+                                                selected: initial_idx,
+                                            };
+                                            break;
+                                        }
                                     }
                                     KeyCode::Esc => {
                                         return Err(anyhow::anyhow!("Setup cancelled"));
@@ -210,9 +316,12 @@ impl AgentsStep {
                         }
                     }
                 }
-                Some(AgentConfigState::ChoosingModel { agent, models, selected }) => {
-                    let mut list_state = SelectableListState::new(models.clone());
-                    list_state.selected = selected;
+                AgentConfigState::ModelPicker { agents, agent_idx, selected } => {
+                    let agent_idx_val = *agent_idx;
+                    let mut list_state = SelectableListState::new(
+                        MODELS.iter().map(|s| s.to_string()).collect(),
+                    );
+                    list_state.selected = *selected;
 
                     loop {
                         terminal.draw(|f| {
@@ -238,7 +347,7 @@ impl AgentsStep {
                                 Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
                             );
                             let subtitle = Line::styled(
-                                format!("  Choose model for agent: {}", agent.id),
+                                format!("  Choose model for agent: {}", agents[agent_idx_val].id),
                                 Style::default().fg(theme.muted()),
                             );
                             let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
@@ -265,19 +374,21 @@ impl AgentsStep {
                                     KeyCode::Up => list_state.move_up(),
                                     KeyCode::Down => list_state.move_down(),
                                     KeyCode::Enter => {
-                                        let mut updated_agent = agent.clone();
-                                        updated_agent.model_backend = Some(models[list_state.selected].clone());
-                                        current_state = Some(AgentConfigState::ChoosingInstances {
-                                            agent: updated_agent,
-                                            instances: agent.instances,
-                                        });
+                                        agents[agent_idx_val].model_backend =
+                                            Some(MODELS[list_state.selected].to_string());
+                                        state = AgentConfigState::MainList {
+                                            agents: agents.clone(),
+                                            selected: agent_idx_val,
+                                            focused_field: 2,
+                                        };
                                         break;
                                     }
                                     KeyCode::Esc => {
-                                        current_state = Some(AgentConfigState::SelectingAction {
+                                        state = AgentConfigState::MainList {
                                             agents: agents.clone(),
-                                            selected: agents.iter().position(|a| a.id == agent.id).unwrap_or(0),
-                                        });
+                                            selected: agent_idx_val,
+                                            focused_field: 2,
+                                        };
                                         break;
                                     }
                                     _ => {}
@@ -285,117 +396,6 @@ impl AgentsStep {
                             }
                         }
                     }
-                }
-                Some(AgentConfigState::ChoosingInstances { agent, instances }) => {
-                    let mut current_instances = instances;
-                    let min_instances = 1u32;
-                    let max_instances = 10u32;
-
-                    loop {
-                        terminal.draw(|f| {
-                            let area = f.area();
-                            let chunks = Layout::default()
-                                .direction(Direction::Vertical)
-                                .margin(3)
-                                .constraints([
-                                    Constraint::Length(4),
-                                    Constraint::Length(3),
-                                    Constraint::Min(1),
-                                    Constraint::Length(2),
-                                ])
-                                .split(area);
-
-                            let title_block = ratatui::widgets::Block::default()
-                                .borders(ratatui::widgets::Borders::BOTTOM)
-                                .border_style(Style::default().fg(theme.border()));
-                            let inner_title = title_block.inner(chunks[0]);
-                            title_block.render(chunks[0], f.buffer_mut());
-
-                            let title = Line::styled(
-                                "◇ SET INSTANCES",
-                                Style::default().fg(theme.accent()).add_modifier(Modifier::BOLD),
-                            );
-                            let subtitle = Line::styled(
-                                format!("  Agent: {} | Model: {}", 
-                                    agent.id, 
-                                    agent.model_backend.as_deref().unwrap_or("default")),
-                                Style::default().fg(theme.muted()),
-                            );
-                            let title_para = ratatui::widgets::Paragraph::new(vec![title, subtitle]);
-                            title_para.render(inner_title, f.buffer_mut());
-
-                            let instances_text = Line::styled(
-                                format!("  Instances: {} (use ← → to adjust)", current_instances),
-                                Style::default().fg(theme.fg()).add_modifier(Modifier::BOLD),
-                            );
-                            let instances_para = Paragraph::new(instances_text)
-                                .alignment(Alignment::Center);
-                            instances_para.render(chunks[1], f.buffer_mut());
-
-                            let help = Line::styled(
-                                "  ← → adjust  │  Enter: confirm  │  Esc: back",
-                                Style::default().fg(theme.muted()),
-                            );
-                            let help_para = Paragraph::new(help);
-                            help_para.render(chunks[3], f.buffer_mut());
-                        })?;
-
-                        if crossterm::event::poll(std::time::Duration::from_millis(100))? {
-                            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                                use crossterm::event::KeyCode;
-                                match key.code {
-                                    KeyCode::Left => {
-                                        if current_instances > min_instances {
-                                            current_instances -= 1;
-                                        }
-                                    }
-                                    KeyCode::Right => {
-                                        if current_instances < max_instances {
-                                            current_instances += 1;
-                                        }
-                                    }
-                                    KeyCode::Enter => {
-                                        let mut updated_agent = agent.clone();
-                                        updated_agent.instances = current_instances;
-                                        
-                                        // Update the agent in the list
-                                        if let Some(pos) = agents.iter().position(|a| a.id == updated_agent.id) {
-                                            agents[pos] = updated_agent;
-                                        }
-                                        
-                                        current_state = Some(AgentConfigState::SelectingAction {
-                                            agents: agents.clone(),
-                                            selected: agents.iter().position(|a| a.id == agent.id).unwrap_or(0),
-                                        });
-                                        break;
-                                    }
-                                    KeyCode::Esc => {
-                                        current_state = Some(AgentConfigState::ChoosingModel {
-                                            agent: agent.clone(),
-                                            models: vec![
-                                                "anthropic/claude-sonnet-4-5".to_string(),
-                                                "anthropic/claude-3-5-sonnet".to_string(),
-                                                "gemini/gemini-2.5-pro".to_string(),
-                                                "openai/gpt-4o".to_string(),
-                                                "openai/gpt-4o-mini".to_string(),
-                                                "groq/llama-3.3-70b-versatile".to_string(),
-                                                "fireworks/accounts/fireworks/models/glm-5".to_string(),
-                                            ],
-                                            selected: 0,
-                                        });
-                                        break;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-                None => {
-                    current_state = Some(AgentConfigState::SelectingAction {
-                        agents: agents.clone(),
-                        selected: 0,
-                    });
                 }
             }
         }
