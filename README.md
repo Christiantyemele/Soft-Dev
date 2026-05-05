@@ -30,12 +30,41 @@ docker run -it --rm \
   ghcr.io/the-agenticflow/openflows:latest setup
 ```
 
-### Option 4: npm
+### Option 4: npm (Node.js Package Manager)
+
+Install globally via npm for easy updates and cross-platform support:
+
 ```bash
-npm install -g openflows
-openflows-setup       # Guided setup wizard
-openflows             # Start orchestration
+# Install the package globally (@the-agenticflow scope)
+npm install -g @the-agenticflow/openflows
+
+# Verify installation
+openflows --version
+
+# Run the interactive setup wizard
+openflows-setup
+
+# Start the autonomous orchestration
+openflows
+
+# Monitor with the dashboard (optional, separate terminal)
+openflows-dashboard
+
+# Diagnose issues
+openflows-doctor
 ```
+
+**Updating via npm:**
+```bash
+npm update -g @the-agenticflow/openflows
+```
+
+**Uninstalling:**
+```bash
+npm uninstall -g @the-agenticflow/openflows
+```
+
+**Note:** The npm package includes platform-specific native binaries as optional dependencies. The correct binary for your platform (Linux x86_64/aarch64, macOS x86_64/Apple Silicon) is automatically downloaded during installation via the `postinstall` script.
 
 ### Option 5: Build from Source
 ```bash
@@ -55,10 +84,89 @@ openflows
 ```
 
 ### After Installation
-1. **Configure** — Run `agentflow-setup` for the guided TUI wizard
-2. **Verify** — Run `agentflow-doctor` to check your environment
-3. **Run** — Run `agentflow` to start the autonomous team
-4. **Monitor** — Run `agentflow-dashboard` for live worker status
+
+#### Standard Commands (All Install Methods)
+
+1. **Configure** — Run `openflows-setup` (or `agentflow-setup`) for the guided TUI wizard
+2. **Verify** — Run `openflows-doctor` (or `agentflow-doctor`) to check your environment
+3. **Run** — Run `openflows` (or `agentflow`) to start the autonomous team
+4. **Monitor** — Run `openflows-dashboard` (or `agentflow-dashboard`) for live worker status
+
+#### npm-Specific Workflow
+
+If you installed via npm, you can also use npx without global installation:
+
+```bash
+# Run setup wizard without installing (uses @the-agenticflow scope)
+npx @the-agenticflow/openflows-setup
+
+# Start orchestration directly
+npx @the-agenticflow/openflows
+
+# Check status
+npx @the-agenticflow/openflows-doctor
+```
+
+**Using npx with specific versions:**
+```bash
+# Run a specific version
+npx @the-agenticflow/openflows@0.1.2
+
+# Run the latest version
+npx @the-agenticflow/openflows@latest
+```
+
+**Package Scripts (if integrating into a Node.js project):**
+
+Add to your `package.json`:
+
+```json
+{
+  "scripts": {
+    "agent:setup": "openflows-setup",
+    "agent:start": "openflows",
+    "agent:doctor": "openflows-doctor",
+    "agent:dashboard": "openflows-dashboard"
+  },
+  "devDependencies": {
+    "@the-agenticflow/openflows": "^0.1.2"
+  }
+}
+```
+
+Or install as a dev dependency:
+```bash
+npm install --save-dev @the-agenticflow/openflows
+```
+
+Then run:
+```bash
+npm run agent:setup      # Configure the system
+npm run agent:start      # Start the orchestration
+npm run agent:doctor     # Check environment
+npm run agent:dashboard  # Monitor workers
+```
+
+**Programmatic API (Node.js):**
+
+```javascript
+const { spawn } = require('child_process');
+const path = require('path');
+
+// Run openflows commands programmatically
+const openflows = spawn('openflows', ['--version'], {
+  stdio: 'inherit',
+  env: {
+    ...process.env,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+  }
+});
+
+openflows.on('exit', (code) => {
+  console.log(`OpenFlows exited with code ${code}`);
+});
+```
 
 ## Getting Started
 
