@@ -1,12 +1,16 @@
 [package]
-name    = "agent-team"
+name    = "agentflow"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "agent-team"
-path = "src/main.rs"
+name = "agentflow"
+path = "src/bin/agentflow.rs"
+
+[[bin]]
+name = "demo"
+path = "src/bin/demo.rs"
 
 [dependencies]
 pocketflow-core = { path = "../crates/pocketflow-core" }

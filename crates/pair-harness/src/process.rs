@@ -322,6 +322,13 @@ impl ProcessManager {
         target.join(".claude").join("plugins").join("orchestration")
     }
 
+    /// Get the Codex plugin directory (source location with .codex-plugin/plugin.json)
+    fn codex_plugin_dir() -> PathBuf {
+        // The orchestration plugin is in the AgentFlow repository root
+        // It contains .codex-plugin/plugin.json manifest for Codex
+        PathBuf::from("orchestration/plugin")
+    }
+
     /// Spawn a FORGE process (long-running) with specified CLI backend.
     pub async fn spawn_forge_with_backend(
         &self,
@@ -357,8 +364,75 @@ impl ProcessManager {
                     .arg(shared);
             }
             CliBackend::Codex => {
-                // Codex doesn't use settings.json or plugin directories
-                // It works with the current directory
+                // Codex uses a marketplace file at ~/.agents/plugins/marketplace.json
+                // to list available plugins. The plugin directory should contain
+                // a .codex-plugin/plugin.json manifest.
+                // See: https://developers.openai.com/codex/plugins/build
+
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/tmp".to_string());
+
+                // Create marketplace directory
+                let agents_dir = PathBuf::from(&home).join(".agents").join("plugins");
+                if !agents_dir.exists() {
+                    std::fs::create_dir_all(&agents_dir)
+                        .context("Failed to create .agents/plugins directory")?;
+                }
+
+                let marketplace_file = agents_dir.join("marketplace.json");
+
+                // Read existing marketplace or create new one
+                let mut marketplace: serde_json::Value = if marketplace_file.exists() {
+                    let content = std::fs::read_to_string(&marketplace_file)
+                        .context("Failed to read marketplace.json")?;
+                    serde_json::from_str(&content).unwrap_or_else(|_| {
+                        serde_json::json!({
+                            "name": "local-plugins",
+                            "plugins": []
+                        })
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": "local-plugins",
+                        "interface": {
+                            "displayName": "Local Plugins"
+                        },
+                        "plugins": []
+                    })
+                };
+
+                // Add orchestration plugin entry if not already present
+                // Use the source plugin directory that contains .codex-plugin/plugin.json
+                let codex_plugin_source = Self::codex_plugin_dir();
+                let plugin_entry = serde_json::json!({
+                    "name": "orchestration",
+                    "source": {
+                        "source": "local",
+                        "path": codex_plugin_source.to_string_lossy().to_string()
+                    },
+                    "policy": {
+                        "installation": "AVAILABLE",
+                        "authentication": "ON_INSTALL"
+                    },
+                    "category": "Productivity"
+                });
+
+                if let Some(plugins) = marketplace
+                    .get_mut("plugins")
+                    .and_then(|p| p.as_array_mut())
+                {
+                    if !plugins.iter().any(|p| p["name"] == "orchestration") {
+                        plugins.push(plugin_entry);
+                    }
+                }
+
+                // Write updated marketplace.json
+                std::fs::write(
+                    &marketplace_file,
+                    serde_json::to_string_pretty(&marketplace)?,
+                )
+                .context("Failed to write marketplace.json")?;
             }
         }
 
