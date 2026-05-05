@@ -114,7 +114,11 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Sanitize version for Docker tags (replace / with -)
+          VERSION=$(echo "$VERSION" | sed 's|/|-|g')
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Build and push
         uses: docker/build-push-action@v5
