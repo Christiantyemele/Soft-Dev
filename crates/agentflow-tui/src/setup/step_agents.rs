@@ -69,15 +69,17 @@ impl AgentsStep {
             }
         }
 
+        // Default agents if registry doesn't exist
+        // Nexus always has exactly 1 instance (immutable)
         if agents.is_empty() {
             agents.push(AgentConfig {
                 id: "nexus".to_string(),
                 cli: "claude".to_string(),
                 active: true,
-                instances: 1,
+                instances: 1, // Nexus is always 1 instance (orchestrator singleton)
                 model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
                 routing_key: Some("nexus-key".to_string()),
-                github_token_env: None,
+                github_token_env: Some("AGENT_NEXUS_GITHUB_TOKEN".to_string()),
             });
             agents.push(AgentConfig {
                 id: "forge".to_string(),
@@ -86,7 +88,7 @@ impl AgentsStep {
                 instances: 2,
                 model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
                 routing_key: Some("forge-key".to_string()),
-                github_token_env: None,
+                github_token_env: Some("AGENT_FORGE_GITHUB_TOKEN".to_string()),
             });
             agents.push(AgentConfig {
                 id: "sentinel".to_string(),
@@ -95,7 +97,7 @@ impl AgentsStep {
                 instances: 1,
                 model_backend: Some("gemini/gemini-2.5-pro".to_string()),
                 routing_key: Some("sentinel-key".to_string()),
-                github_token_env: None,
+                github_token_env: Some("AGENT_SENTINEL_GITHUB_TOKEN".to_string()),
             });
             agents.push(AgentConfig {
                 id: "vessel".to_string(),
@@ -104,7 +106,7 @@ impl AgentsStep {
                 instances: 1,
                 model_backend: Some("groq/llama-3.3-70b-versatile".to_string()),
                 routing_key: Some("vessel-key".to_string()),
-                github_token_env: None,
+                github_token_env: Some("AGENT_VESSEL_GITHUB_TOKEN".to_string()),
             });
             agents.push(AgentConfig {
                 id: "lore".to_string(),
@@ -113,7 +115,7 @@ impl AgentsStep {
                 instances: 1,
                 model_backend: Some("openai/gpt-4o-mini".to_string()),
                 routing_key: Some("lore-key".to_string()),
-                github_token_env: None,
+                github_token_env: Some("AGENT_LORE_GITHUB_TOKEN".to_string()),
             });
         }
 
@@ -203,11 +205,22 @@ impl AgentsStep {
                                     row_text.push_str(&format!(" {:<10}", active_str));
                                 }
 
-                                // Instances field
-                                if is_selected && *focused_field == 1 {
-                                    row_text.push_str(&format!("[{:<12}]", instances_str));
+                                // Instances field (nexus is locked at 1)
+                                let is_nexus = agent.id == "nexus";
+                                let instances_editable = !is_nexus;
+                                let instances_display = if is_nexus {
+                                    format!("{} (locked)", instances_str)
                                 } else {
-                                    row_text.push_str(&format!(" {:<12}", instances_str));
+                                    instances_str.clone()
+                                };
+                                if is_selected && *focused_field == 1 {
+                                    if instances_editable {
+                                        row_text.push_str(&format!("[{:<12}]", instances_str));
+                                    } else {
+                                        row_text.push_str(&format!(" {:<12}", instances_display));
+                                    }
+                                } else {
+                                    row_text.push_str(&format!(" {:<12}", instances_display));
                                 }
 
                                 // Model field
@@ -238,7 +251,7 @@ impl AgentsStep {
                                     Style::default().fg(theme.muted()),
                                 ),
                                 Line::styled(
-                                    "  Enter on model: pick model  │  Shift+Tab: finish & continue",
+                                    "  Enter on model: pick model  │  Shift+Tab: finish  │  Nexus: always 1 instance (locked)",
                                     Style::default().fg(theme.muted()),
                                 ),
                             ];
@@ -280,12 +293,12 @@ impl AgentsStep {
                                         }
                                     }
                                     KeyCode::Left => {
-                                        if *focused_field == 1 && agents[*selected].instances > 1 {
+                                        if *focused_field == 1 && agents[*selected].id != "nexus" && agents[*selected].instances > 1 {
                                             agents[*selected].instances -= 1;
                                         }
                                     }
                                     KeyCode::Right => {
-                                        if *focused_field == 1 && agents[*selected].instances < 10 {
+                                        if *focused_field == 1 && agents[*selected].id != "nexus" && agents[*selected].instances < 10 {
                                             agents[*selected].instances += 1;
                                         }
                                     }

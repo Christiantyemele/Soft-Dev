@@ -18,6 +18,15 @@ impl RepoStep {
         Self
     }
 
+    /// Get the workspace directory path anchored to ~/.agentflow
+    fn get_agentflow_workspace_dir(repo: &str) -> String {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let dir_name = repo.replace('/', "-").replace('\\', "-");
+        format!("{}/.agentflow/workspaces/{}", home, dir_name)
+    }
+
     pub async fn render(
         &self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -26,12 +35,22 @@ impl RepoStep {
     ) -> Result<()> {
         let theme = Theme::default();
         let mut repo_input = Input::new(config.repo.clone());
-        let mut workspace_input = Input::new(config.workspace_dir.clone());
+        // Workspace is always anchored to ~/.agentflow/workspaces - derived from repo
+        // This ensures artifact directories are always in the hidden ~/.agentflow dir
+        let workspace_dir = Self::get_agentflow_workspace_dir(&config.repo);
+        let mut workspace_input = Input::new(workspace_dir.clone());
         let mut focused_field = 0;
 
         let repo_regex = regex::Regex::new(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$").unwrap();
 
         loop {
+            // Auto-update workspace when repo changes (workspace is derived, not editable)
+            let current_repo = repo_input.value();
+            let expected_workspace = Self::get_agentflow_workspace_dir(current_repo);
+            if workspace_input.value() != expected_workspace {
+                workspace_input = Input::new(expected_workspace);
+            }
+
             let repo_valid = repo_regex.is_match(repo_input.value());
             let workspace_valid = !workspace_input.value().is_empty();
 
@@ -71,8 +90,8 @@ impl RepoStep {
                     width: area.width - 4,
                     height: 3,
                 };
-                let ws_widget = InputWidget::new(&workspace_input, "Workspace Directory")
-                    .focused(focused_field == 1);
+                let ws_widget = InputWidget::new(&workspace_input, "Workspace Directory (auto-derived)")
+                    .focused(false); // Never focused - auto-derived from repo
                 ws_widget.render(ws_widget_area, f.buffer_mut());
 
                 let mut checks = Vec::new();
@@ -84,11 +103,8 @@ impl RepoStep {
                         CheckState::Fail,
                     ));
                 }
-                if workspace_valid {
-                    checks.push(("Workspace directory set".to_string(), CheckState::Pass));
-                } else {
-                    checks.push(("Workspace directory empty".to_string(), CheckState::Fail));
-                }
+                // Workspace is always valid since it's auto-derived to ~/.agentflow/workspaces/
+                checks.push(("Workspace directory (auto-derived to ~/.agentflow)".to_string(), CheckState::Pass));
                 let check_area = ratatui::layout::Rect {
                     x: 2,
                     y: y_start + 11,
@@ -104,7 +120,8 @@ impl RepoStep {
                     use crossterm::event::KeyCode;
                     match key.code {
                         KeyCode::Tab => {
-                            focused_field = (focused_field + 1) % 2;
+                            // Only one editable field (repo), workspace is auto-derived
+                            focused_field = 0;
                         }
                         KeyCode::Enter => {
                             if repo_valid && workspace_valid {
@@ -118,12 +135,10 @@ impl RepoStep {
                         }
                         _ => {
                             let event = crossterm::event::Event::Key(key);
-                            let input = match focused_field {
-                                0 => &mut repo_input,
-                                1 => &mut workspace_input,
-                                _ => unreachable!(),
-                            };
-                            input.handle_event(&event);
+                            // Only handle events for repo field - workspace is auto-derived
+                            if focused_field == 0 {
+                                repo_input.handle_event(&event);
+                            }
                         }
                     }
                 }

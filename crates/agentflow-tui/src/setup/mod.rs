@@ -137,27 +137,27 @@ async fn run_wizard_inner(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) 
     let env_step = EnvStep::new();
     env_step.render(&mut terminal, &theme)?;
 
-    // Step 5: GitHub Authentication
-    let github_step = GitHubStep::new();
-    github_step.render(&mut terminal, &theme, &mut config).await?;
-
-    // Step 6: Provider selection
-    let mut provider_step = ProviderStep::new();
-    provider_step.render(&mut terminal, &theme, &mut config).await?;
-
-    // Step 7: LLM API Key Input
-    let api_step = ApiStep::new();
-    api_step.render(&mut terminal, &theme, &mut config).await?;
-
-    // Step 7.5: Agent Configuration (instances, model backend, tokens)
+    // Step 5: Agent Configuration (instances, model backend) — must come before GitHub tokens
     let agents_step = AgentsStep::new();
     agents_step.render(&mut terminal, &theme, &mut config).await?;
 
-    // Step 8: Repository Config
+    // Step 6: GitHub Authentication (uses agent config to determine token fields)
+    let github_step = GitHubStep::new();
+    github_step.render(&mut terminal, &theme, &mut config).await?;
+
+    // Step 7: Provider selection
+    let mut provider_step = ProviderStep::new();
+    provider_step.render(&mut terminal, &theme, &mut config).await?;
+
+    // Step 8: LLM API Key Input
+    let api_step = ApiStep::new();
+    api_step.render(&mut terminal, &theme, &mut config).await?;
+
+    // Step 9: Repository Config
     let repo_step = RepoStep::new();
     repo_step.render(&mut terminal, &theme, &mut config).await?;
 
-    // Step 9: Proxy Config (advanced mode or optional)
+    // Step 10: Proxy Config (advanced mode or optional)
     if setup_mode == SetupMode::Advanced {
         let proxy_step = ProxyStep::new();
         proxy_step
@@ -165,7 +165,7 @@ async fn run_wizard_inner(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) 
             .await?;
     }
 
-    // Step 10: Completion
+    // Step 11: Completion
     let done_step = DoneStep::new();
     done_step.render(&mut terminal, &theme, &config).await?;
 
@@ -230,7 +230,7 @@ pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) 
 
     let registry = config::Registry {
         team: if config.agents.is_empty() {
-            // Default agents if none configured
+            // Default agents if none configured - use standard token env vars
             vec![
                 config::RegistryEntry {
                     id: "nexus".to_string(),
@@ -239,7 +239,7 @@ pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) 
                     instances: 1,
                     model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
                     routing_key: Some("nexus-key".to_string()),
-                    github_token_env: None,
+                    github_token_env: Some("AGENT_NEXUS_GITHUB_TOKEN".to_string()),
                 },
                 config::RegistryEntry {
                     id: "forge".to_string(),
@@ -248,7 +248,7 @@ pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) 
                     instances: 2,
                     model_backend: Some("anthropic/claude-sonnet-4-5".to_string()),
                     routing_key: Some("forge-key".to_string()),
-                    github_token_env: None,
+                    github_token_env: Some("AGENT_FORGE_GITHUB_TOKEN".to_string()),
                 },
                 config::RegistryEntry {
                     id: "sentinel".to_string(),
@@ -257,7 +257,7 @@ pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) 
                     instances: 1,
                     model_backend: Some("gemini/gemini-2.5-pro".to_string()),
                     routing_key: Some("sentinel-key".to_string()),
-                    github_token_env: None,
+                    github_token_env: Some("AGENT_SENTINEL_GITHUB_TOKEN".to_string()),
                 },
                 config::RegistryEntry {
                     id: "vessel".to_string(),
@@ -266,7 +266,7 @@ pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) 
                     instances: 1,
                     model_backend: Some("groq/llama-3.3-70b-versatile".to_string()),
                     routing_key: Some("vessel-key".to_string()),
-                    github_token_env: None,
+                    github_token_env: Some("AGENT_VESSEL_GITHUB_TOKEN".to_string()),
                 },
                 config::RegistryEntry {
                     id: "lore".to_string(),
@@ -275,21 +275,31 @@ pub fn write_registry_file(config: &SetupConfig, project_dir: &std::path::Path) 
                     instances: 1,
                     model_backend: Some("openai/gpt-4o-mini".to_string()),
                     routing_key: Some("lore-key".to_string()),
-                    github_token_env: None,
+                    github_token_env: Some("AGENT_LORE_GITHUB_TOKEN".to_string()),
                 },
             ]
         } else {
             config
                 .agents
                 .iter()
-                .map(|agent| config::RegistryEntry {
-                    id: agent.id.clone(),
-                    cli: agent.cli.clone(),
-                    active: agent.active,
-                    instances: agent.instances,
-                    model_backend: agent.model_backend.clone(),
-                    routing_key: agent.routing_key.clone(),
-                    github_token_env: agent.github_token_env.clone(),
+                .map(|agent| {
+                    // Ensure github_token_env is set - use agent's value or generate default
+                    let token_env = agent.github_token_env.clone().or_else(|| {
+                        if agent.active {
+                            Some(format!("AGENT_{}_GITHUB_TOKEN", agent.id.to_uppercase()))
+                        } else {
+                            None
+                        }
+                    });
+                    config::RegistryEntry {
+                        id: agent.id.clone(),
+                        cli: agent.cli.clone(),
+                        active: agent.active,
+                        instances: agent.instances,
+                        model_backend: agent.model_backend.clone(),
+                        routing_key: agent.routing_key.clone(),
+                        github_token_env: token_env,
+                    }
                 })
                 .collect()
         },

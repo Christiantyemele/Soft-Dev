@@ -202,7 +202,12 @@ impl GitHubStep {
                                     let value = field.input.value().to_string();
                                     match field.env_key.as_str() {
                                         "GITHUB_PERSONAL_ACCESS_TOKEN" => {
-                                            config.github_pat = value;
+                                            config.github_pat = value.clone();
+                                            // Also set this as the github_token_env for all active agents
+                                            // when using the fallback single PAT
+                                            for agent in config.agents.iter_mut().filter(|a| a.active) {
+                                                agent.github_token_env = Some("GITHUB_PERSONAL_ACCESS_TOKEN".to_string());
+                                            }
                                         }
                                         _ => {
                                             if field.env_key.starts_with("AGENT_") {
