@@ -46,6 +46,20 @@ async fn initialize_store() -> Result<SharedStore> {
 }
 ```
 
+### TUI / Monitoring Interface
+
+The event ring buffer is designed to support a **Terminal User Interface (TUI)** for real-time monitoring of agent activities:
+
+- **`get_events_since(cursor)`** - Allows a TUI to "tail" new events efficiently
+- **`event_count()`** - Enables initial render of existing events
+
+A TUI would typically:
+1. Query `event_count()` on startup to render historical events
+2. Poll `get_events_since(last_cursor)` in a loop to display new events as they occur
+3. Show agent lifecycle phases (prep → exec → post) in real-time
+
+This enables operators to watch the orchestration flow, debug issues, and monitor system health without reading raw logs.
+
 ## 3. API Reference
 
 ### Core Key-Value Operations
@@ -490,7 +504,7 @@ impl Node for VesselNode {
 
 ### SENTINEL Pattern: Ephemeral Evaluator
 
-SENTINEL is spawned ephemerally for code review and doesn't use the SharedStore for its core evaluation logic (it uses filesystem-based state in the pair harness). However, it does write results to the store:
+SENTINEL is spawned ephemerally for code review and doesn't read from the SharedStore during its core evaluation logic (it uses filesystem-based state in the pair harness). However, it does write results back to the store for downstream agents to consume:
 
 ```rust
 #[async_trait]
@@ -627,7 +641,127 @@ auto-aof-rewrite-min-size 64mb
 ```
 
 ## 9. Data Flow Diagram
-![alt text](<image9.png>)
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '14px'}}}%%
+graph TD
+
+    subgraph Agents["Agents"]
+        NEXUS["NEXUS\nOrchestrator"]
+        FORGE["FORGE\nBatch Worker"]
+        VESSEL["VESSEL\nMerge Gatekeeper"]
+        SENTINEL["SENTINEL\nCode Reviewer"]
+        LORE["LORE\nDocumentarian"]
+    end
+
+    subgraph SharedStore["SharedStore"]
+        StoreBackend[("Store Backend\nIn-Memory / Redis")]
+        EventRingBuffer[("Event Ring Buffer\n1000 events")]
+    end
+
+    subgraph External["External"]
+        GithubAPI[("Github API")]
+        TUIMonitoring["TUI / Monitoring"]
+    end
+
+    %% NEXUS arrows (strokeColor=#82b366)
+    NEXUS -->|"Sync issues/PRs"| GithubAPI
+    NEXUS -->|"1. Read worker_slots"| StoreBackend
+    NEXUS -->|"2. Read tickets"| StoreBackend
+    NEXUS -->|"3. Read pending_prs"| StoreBackend
+    NEXUS -->|"4. Write ticket assignment"| StoreBackend
+    NEXUS -->|"5. Write worker assignments"| StoreBackend
+    NEXUS -->|"6. Emit decision"| EventRingBuffer
+
+    %% FORGE arrows (strokeColor=#666666)
+    FORGE -->|"Create PRs"| GithubAPI
+    FORGE -->|"1. Read worker_slots"| StoreBackend
+    FORGE -->|"2. Write worker status"| StoreBackend
+    FORGE -->|"3. Write ticket outcomed"| StoreBackend
+    FORGE -->|"4. Write pending_pr"| StoreBackend
+    FORGE -->|"5. Emit Progress"| EventRingBuffer
+
+    %% VESSEL arrows (strokeColor=#b85450)
+    VESSEL -->|"Merge PRs"| GithubAPI
+    VESSEL -->|"1. Read pending_prs"| StoreBackend
+    VESSEL -->|"2. Read ticket"| StoreBackend
+    VESSEL -->|"3. Write ticket:status"| StoreBackend
+    VESSEL -->|"4. Update pending_prs"| StoreBackend
+    VESSEL -->|"5. Write worker_slots"| StoreBackend
+    VESSEL -->|"6. Emit Merge Event"| EventRingBuffer
+
+    %% SENTINEL arrows (strokeColor=#d79b00)
+    SENTINEL -->|"1. Write evaluation results"| StoreBackend
+    SENTINEL -->|"2. Emit verdicts"| EventRingBuffer
+
+    %% LORE arrows (strokeColor=#6c8ebf)
+    LORE -->|"1. Read historical events"| EventRingBuffer
+    LORE -->|"2. Read tickets"| StoreBackend
+    LORE -->|"3. Write ADRs"| StoreBackend
+    LORE -->|"4. Emit docs"| EventRingBuffer
+
+    %% EventRingBuffer → TUI (strokeColor=#9673a6)
+    EventRingBuffer -->|"Tail Event"| TUIMonitoring
+
+    %% Node styles — fill and stroke from XML
+    style NEXUS         fill:#d5e8d4,stroke:#82b366,color:#000000
+    style FORGE         fill:#f5f5f5,stroke:#666666,color:#333333
+    style VESSEL        fill:#f8cecc,stroke:#b85450,color:#000000
+    style SENTINEL      fill:#ffe6cc,stroke:#d79b00,color:#000000
+    style LORE          fill:#dae8fc,stroke:#6c8ebf,color:#000000
+    style StoreBackend  fill:#e1d5e7,stroke:#9673a6,color:#000000
+    style EventRingBuffer fill:#e1d5e7,stroke:#9673a6,color:#000000
+    style GithubAPI     fill:#dae8fc,stroke:#6c8ebf,color:#000000
+    style TUIMonitoring fill:#dae8fc,stroke:#6c8ebf,color:#000000
+
+    %% Subgraph background colors from XML
+    %% Agents band:    fill=#bac8d3, stroke=#23445d
+    %% SharedStore band: fill=#eeeeee, stroke=#36393d
+    %% External band:  fill=#b1ddf0, stroke=#10739e
+    style Agents      fill:#bac8d3,stroke:#23445d,color:#000000
+    style SharedStore fill:#eeeeee,stroke:#36393d,color:#000000
+    style External    fill:#b1ddf0,stroke:#10739e,color:#000000
+
+    %% Link styles — arrow colors by source agent
+    %% NEXUS links (indices 0–6): #82b366
+    linkStyle 0  stroke:#82b366,fill:none
+    linkStyle 1  stroke:#82b366,fill:none
+    linkStyle 2  stroke:#82b366,fill:none
+    linkStyle 3  stroke:#82b366,fill:none
+    linkStyle 4  stroke:#82b366,fill:none
+    linkStyle 5  stroke:#82b366,fill:none
+    linkStyle 6  stroke:#82b366,fill:none
+
+    %% FORGE links (indices 7–11): #666666
+    linkStyle 7  stroke:#666666,fill:none
+    linkStyle 8  stroke:#666666,fill:none
+    linkStyle 9  stroke:#666666,fill:none
+    linkStyle 10 stroke:#666666,fill:none
+    linkStyle 11 stroke:#666666,fill:none
+    linkStyle 12 stroke:#666666,fill:none
+
+    %% VESSEL links (indices 12–18): #b85450
+    linkStyle 13 stroke:#b85450,fill:none
+    linkStyle 14 stroke:#b85450,fill:none
+    linkStyle 15 stroke:#b85450,fill:none
+    linkStyle 16 stroke:#b85450,fill:none
+    linkStyle 17 stroke:#b85450,fill:none
+    linkStyle 18 stroke:#b85450,fill:none
+    linkStyle 19 stroke:#b85450,fill:none
+
+    %% SENTINEL links (indices 19–20): #d79b00
+    linkStyle 20 stroke:#d79b00,fill:none
+    linkStyle 21 stroke:#d79b00,fill:none
+
+    %% LORE links (indices 21–24): #6c8ebf
+    linkStyle 22 stroke:#6c8ebf,fill:none
+    linkStyle 23 stroke:#6c8ebf,fill:none
+    linkStyle 24 stroke:#6c8ebf,fill:none
+    linkStyle 25 stroke:#6c8ebf,fill:none
+
+    %% EventRingBuffer → TUI (index 25): #9673a6
+    linkStyle 26 stroke:#9673a6,fill:none
+
+```
 
 ## 10. Best Practices
 

@@ -169,7 +169,7 @@ cargo test -p agent-forge --test forge_claude_e2e
 ```
 
 ## 📂 Architecture Overview
-- **SharedStore**: A key-value store where agents exchange state (e.g., [`worker_slots`](docs/shared-store.md), [`tickets`](docs/shared-store.md)). For comprehensive details, see the [SharedStore Documentation](docs/shared-store.md).
+- **SharedStore**: A key-value store where agents exchange state (e.g., [`worker_slots`](docs/shared-store.md#workerslot-schema) and [`tickets`](docs/shared-store.md#ticket-schema)). For comprehensive details, see the [SharedStore Documentation](docs/shared-store.md).
 - **Graph Nodes**: Each agent is a `BatchNode` that reads from the store and writes back "actions" (e.g., `work_assigned`).
 - **PocketFlow**: The engine that executes the graph and manages state transitions.
 
