@@ -171,9 +171,27 @@ cargo test -p agent-forge --test forge_claude_e2e
 ```
 
 ## 📂 Architecture Overview
-- **SharedStore**: A key-value store where agents exchange state (e.g., `worker_slots`, `tickets`).
+- **SharedStore**: A key-value store where agents exchange state (e.g., [`worker_slots`](docs/shared-store.md#workerslot-schema) and [`tickets`](docs/shared-store.md#ticket-schema)). For comprehensive details, see the [SharedStore Documentation](docs/shared-store.md).
 - **Graph Nodes**: Each agent is a `BatchNode` that reads from the store and writes back "actions" (e.g., `work_assigned`).
 - **PocketFlow**: The engine that executes the graph and manages state transitions.
+
+### Understanding SharedStore
+
+The SharedStore is the central nervous system of AgentFlow. All agents communicate through it:
+
+1. **NEXUS** reads `worker_slots` and `tickets`, assigns work, writes back assignments
+2. **FORGE** reads assigned tickets, spawns workers, writes results and `pending_prs`
+3. **VESSEL** reads `pending_prs`, merges approved PRs, updates ticket status
+4. **SENTINEL** (ephemeral) evaluates code quality, writes review results
+5. **LORE** reads event history, writes documentation and ADRs
+
+See [docs/shared-store.md](docs/shared-store.md) for:
+- Complete API reference with code examples
+- Key namespace schemas (`tickets`, `worker_slots`, `pending_prs`, etc.)
+- Agent interaction patterns with real implementation snippets
+- Event system documentation (1000-event ring buffer)
+- Testing patterns with in-memory backend
+- Production Redis setup guide
 
 ## 📜 Development Workflow
 
