@@ -8,22 +8,164 @@ An autonomous software development team composed of AI agents working in a unifi
 
 ## Quick Start
 
+### Option 1: One-Line Install (Recommended)
 ```bash
-# 1. Clone and setup
+curl -fsSL https://raw.githubusercontent.com/The-AgenticFlow/AgentFlow/main/scripts/install.sh | bash
+```
+This installs all binaries to `~/.local/bin` and offers to run the setup wizard.
+
+### Option 2: Homebrew (macOS)
+```bash
+brew tap The-AgenticFlow/openflows
+brew install openflows
+```
+
+### Option 3: Docker
+```bash
+docker run -it --rm \
+  -v "$HOME/.agentflow:/home/openflows/.agentflow" \
+  -v "$(pwd):/workspace" \
+  -e ANTHROPIC_API_KEY=your_key \
+  -e GITHUB_PERSONAL_ACCESS_TOKEN=your_token \
+  ghcr.io/the-agenticflow/openflows:latest setup
+```
+
+### Option 4: npm (Node.js Package Manager)
+
+Install globally via npm for easy updates and cross-platform support:
+
+```bash
+# Install the package globally (@the-agenticflow scope)
+npm install -g @the-agenticflow/openflows
+
+# Verify installation
+openflows --version
+
+# Run the interactive setup wizard
+openflows-setup
+
+# Start the autonomous orchestration
+openflows
+
+# Monitor with the dashboard (optional, separate terminal)
+openflows-dashboard
+
+# Diagnose issues
+openflows-doctor
+```
+
+**Updating via npm:**
+```bash
+npm update -g @the-agenticflow/openflows
+```
+
+**Uninstalling:**
+```bash
+npm uninstall -g @the-agenticflow/openflows
+```
+
+**Note:** The npm package includes platform-specific native binaries as optional dependencies. The correct binary for your platform (Linux x86_64/aarch64, macOS x86_64/Apple Silicon) is automatically downloaded during installation via the `postinstall` script.
+
+### Option 5: Build from Source
+```bash
 git clone https://github.com/The-AgenticFlow/AgentFlow.git
 cd AgentFlow
-cp .env.example .env
-# Edit .env with your API keys
+make release          # or: cargo build --release -p openflows
+make install          # installs to ~/.local/bin
+openflows-setup       # Guided setup wizard
+openflows             # Start orchestration
+```
 
-# 2. Start the local proxy (required when gateway doesn't support Anthropic format)
-source .env && ./scripts/start_proxy.sh &
-# Or if your provider supports Anthropic directly, skip this step
+### Option 6: Cargo Install
+```bash
+cargo install openflows
+openflows-setup
+openflows
+```
 
-# 3. Verify setup (optional but recommended)
-./scripts/check_setup.sh
+### After Installation
 
-# 4. Run the orchestration
-cargo run --bin agentflow
+#### Standard Commands (All Install Methods)
+
+1. **Configure** — Run `openflows-setup` (or `agentflow-setup`) for the guided TUI wizard
+2. **Verify** — Run `openflows-doctor` (or `agentflow-doctor`) to check your environment
+3. **Run** — Run `openflows` (or `agentflow`) to start the autonomous team
+4. **Monitor** — Run `openflows-dashboard` (or `agentflow-dashboard`) for live worker status
+
+#### npm-Specific Workflow
+
+If you installed via npm, you can also use npx without global installation:
+
+```bash
+# Run setup wizard without installing (uses @the-agenticflow scope)
+npx @the-agenticflow/openflows-setup
+
+# Start orchestration directly
+npx @the-agenticflow/openflows
+
+# Check status
+npx @the-agenticflow/openflows-doctor
+```
+
+**Using npx with specific versions:**
+```bash
+# Run a specific version
+npx @the-agenticflow/openflows@0.1.2
+
+# Run the latest version
+npx @the-agenticflow/openflows@latest
+```
+
+**Package Scripts (if integrating into a Node.js project):**
+
+Add to your `package.json`:
+
+```json
+{
+  "scripts": {
+    "agent:setup": "openflows-setup",
+    "agent:start": "openflows",
+    "agent:doctor": "openflows-doctor",
+    "agent:dashboard": "openflows-dashboard"
+  },
+  "devDependencies": {
+    "@the-agenticflow/openflows": "^0.1.2"
+  }
+}
+```
+
+Or install as a dev dependency:
+```bash
+npm install --save-dev @the-agenticflow/openflows
+```
+
+Then run:
+```bash
+npm run agent:setup      # Configure the system
+npm run agent:start      # Start the orchestration
+npm run agent:doctor     # Check environment
+npm run agent:dashboard  # Monitor workers
+```
+
+**Programmatic API (Node.js):**
+
+```javascript
+const { spawn } = require('child_process');
+const path = require('path');
+
+// Run openflows commands programmatically
+const openflows = spawn('openflows', ['--version'], {
+  stdio: 'inherit',
+  env: {
+    ...process.env,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+  }
+});
+
+openflows.on('exit', (code) => {
+  console.log(`OpenFlows exited with code ${code}`);
+});
 ```
 
 ## Getting Started
