@@ -62,14 +62,26 @@ pub struct FallbackClient {
     clients: Vec<Box<dyn LlmClient>>,
     current_idx: usize,
     timeout: Duration,
+    max_retries: u32,
+    retry_delay_ms: u64,
 }
 
 impl FallbackClient {
     pub fn new(clients: Vec<Box<dyn LlmClient>>, timeout: Duration) -> Self {
+        let max_retries = std::env::var("LLM_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        let retry_delay_ms = std::env::var("LLM_RETRY_DELAY_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
         Self {
             clients,
             current_idx: 0,
             timeout,
+            max_retries,
+            retry_delay_ms,
         }
     }
 
@@ -379,30 +391,79 @@ impl LlmClient for FallbackClient {
                 );
             }
 
-            let result = tokio::time::timeout(self.timeout, client.send(messages, tools)).await;
+            // Retry with exponential backoff
+            for attempt in 0..self.max_retries {
+                let result = tokio::time::timeout(self.timeout, client.send(messages, tools)).await;
 
-            match result {
-                Ok(Ok(response)) => {
-                    return Ok(response);
-                }
-                Ok(Err(e)) => {
-                    warn!(
-                        provider = client.model(),
-                        error = %e,
-                        "Provider failed, trying next"
-                    );
-                    last_error = Some(e);
-                }
-                Err(_timeout) => {
-                    warn!(
-                        provider = client.model(),
-                        timeout_secs = self.timeout.as_secs(),
-                        "Provider timed out, trying next"
-                    );
-                    last_error = Some(anyhow::anyhow!(
-                        "Provider timed out after {}s",
-                        self.timeout.as_secs()
-                    ));
+                match result {
+                    Ok(Ok(response)) => {
+                        if attempt > 0 {
+                            info!(
+                                provider = client.model(),
+                                attempt = attempt + 1,
+                                "Request succeeded after retry"
+                            );
+                        }
+                        return Ok(response);
+                    }
+                    Ok(Err(e)) => {
+                        let error_str = e.to_string();
+                        let is_retryable = error_str.contains("504")
+                            || error_str.contains("502")
+                            || error_str.contains("503")
+                            || error_str.contains("429")
+                            || error_str.contains("timeout")
+                            || error_str.contains("Gateway")
+                            || error_str.contains("HTTP request")
+                            || error_str.contains("connection")
+                            || error_str.contains("connect");
+
+                        if is_retryable && attempt < self.max_retries - 1 {
+                            let delay_ms = self.retry_delay_ms * (2_u64.pow(attempt));
+                            warn!(
+                                provider = client.model(),
+                                attempt = attempt + 1,
+                                max_retries = self.max_retries,
+                                delay_ms = delay_ms,
+                                error = %e,
+                                "Retryable error, retrying with exponential backoff"
+                            );
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            continue;
+                        }
+                        warn!(
+                            provider = client.model(),
+                            error = %e,
+                            "Provider failed, trying next"
+                        );
+                        last_error = Some(e);
+                        break;
+                    }
+                    Err(_timeout) => {
+                        if attempt < self.max_retries - 1 {
+                            let delay_ms = self.retry_delay_ms * (2_u64.pow(attempt));
+                            warn!(
+                                provider = client.model(),
+                                attempt = attempt + 1,
+                                max_retries = self.max_retries,
+                                delay_ms = delay_ms,
+                                timeout_secs = self.timeout.as_secs(),
+                                "Provider timed out, retrying with exponential backoff"
+                            );
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            continue;
+                        }
+                        warn!(
+                            provider = client.model(),
+                            timeout_secs = self.timeout.as_secs(),
+                            "Provider timed out after all retries, trying next"
+                        );
+                        last_error = Some(anyhow::anyhow!(
+                            "Provider timed out after {}s ({} retries exhausted)",
+                            self.timeout.as_secs(),
+                            self.max_retries
+                        ));
+                    }
                 }
             }
         }

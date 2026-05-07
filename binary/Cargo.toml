@@ -1,5 +1,5 @@
 [package]
-name    = "agent-team"
+name    = "agentflow"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -7,10 +7,6 @@ license = "MIT"
 [[bin]]
 name = "agentflow"
 path = "src/bin/agentflow.rs"
-
-[[bin]]
-name = "agentflow-demo"
-path = "src/main.rs"
 
 [[bin]]
 name = "demo"

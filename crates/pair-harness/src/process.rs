@@ -1,5 +1,9 @@
 // crates/pair-harness/src/process.rs
 //! Process management for FORGE and SENTINEL agents.
+//!
+//! Supports multiple CLI backends:
+//! - Claude Code CLI (default): `claude --dangerously-skip-permissions -p <prompt> --output-format stream-json`
+//! - OpenAI Codex CLI: `codex --approval-mode full-auto -q "<prompt>"`
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
@@ -8,6 +12,8 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tracing::{debug, error, info, warn};
+
+use crate::types::CliBackend;
 
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
@@ -45,8 +51,14 @@ impl SentinelMode {
 }
 
 /// Manages FORGE and SENTINEL processes.
+/// Supports both Claude Code and Codex CLI backends.
 pub struct ProcessManager {
+    /// Path to Claude CLI binary
     claude_path: PathBuf,
+    /// Path to Codex CLI binary
+    codex_path: PathBuf,
+    /// Default CLI backend to use
+    default_backend: CliBackend,
     github_token: String,
     redis_url: Option<String>,
     proxy_url: Option<String>,
@@ -54,17 +66,23 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
+    /// Create a new ProcessManager with default CLI backend (Claude).
     pub fn new(github_token: impl Into<String>) -> Self {
         let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
-        let claude_path = PathBuf::from(claude_path);
+        let claude_path = PathBuf::from(&claude_path);
+        let codex_path = std::env::var("CODEX_PATH").unwrap_or_else(|_| "codex".to_string());
+        let codex_path = PathBuf::from(&codex_path);
 
-        Self::validate_claude_binary(&claude_path);
+        Self::validate_cli_binary(&claude_path, "claude");
+        Self::validate_cli_binary(&codex_path, "codex");
 
         let proxy_url = std::env::var("PROXY_URL").ok();
         let proxy_api_key = std::env::var("PROXY_API_KEY").ok();
 
         Self {
             claude_path,
+            codex_path,
+            default_backend: CliBackend::default(),
             github_token: github_token.into(),
             redis_url: None,
             proxy_url,
@@ -72,17 +90,23 @@ impl ProcessManager {
         }
     }
 
+    /// Create a ProcessManager with Redis backend.
     pub fn with_redis(github_token: impl Into<String>, redis_url: impl Into<String>) -> Self {
         let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
-        let claude_path = PathBuf::from(claude_path);
+        let claude_path = PathBuf::from(&claude_path);
+        let codex_path = std::env::var("CODEX_PATH").unwrap_or_else(|_| "codex".to_string());
+        let codex_path = PathBuf::from(&codex_path);
 
-        Self::validate_claude_binary(&claude_path);
+        Self::validate_cli_binary(&claude_path, "claude");
+        Self::validate_cli_binary(&codex_path, "codex");
 
         let proxy_url = std::env::var("PROXY_URL").ok();
         let proxy_api_key = std::env::var("PROXY_API_KEY").ok();
 
         Self {
             claude_path,
+            codex_path,
+            default_backend: CliBackend::default(),
             github_token: github_token.into(),
             redis_url: Some(redis_url.into()),
             proxy_url,
@@ -90,20 +114,26 @@ impl ProcessManager {
         }
     }
 
+    /// Create a ProcessManager with proxy configuration.
     pub fn with_proxy(
         github_token: impl Into<String>,
         redis_url: Option<String>,
         proxy_url: impl Into<String>,
     ) -> Self {
         let claude_path = std::env::var("CLAUDE_PATH").unwrap_or_else(|_| "claude".to_string());
-        let claude_path = PathBuf::from(claude_path);
+        let claude_path = PathBuf::from(&claude_path);
+        let codex_path = std::env::var("CODEX_PATH").unwrap_or_else(|_| "codex".to_string());
+        let codex_path = PathBuf::from(&codex_path);
 
-        Self::validate_claude_binary(&claude_path);
+        Self::validate_cli_binary(&claude_path, "claude");
+        Self::validate_cli_binary(&codex_path, "codex");
 
         let proxy_api_key = std::env::var("PROXY_API_KEY").ok();
 
         Self {
             claude_path,
+            codex_path,
+            default_backend: CliBackend::default(),
             github_token: github_token.into(),
             redis_url,
             proxy_url: Some(proxy_url.into()),
@@ -111,29 +141,44 @@ impl ProcessManager {
         }
     }
 
-    fn validate_claude_binary(claude_path: &Path) {
-        if claude_path.is_absolute() {
-            if !claude_path.exists() {
+    /// Set the default CLI backend.
+    pub fn with_default_backend(mut self, backend: CliBackend) -> Self {
+        self.default_backend = backend;
+        self
+    }
+
+    /// Validate a CLI binary exists and is executable.
+    fn validate_cli_binary(path: &Path, name: &str) {
+        let env_var = format!("{}_PATH", name.to_uppercase());
+        if path.is_absolute() {
+            if !path.exists() {
                 error!(
-                    path = %claude_path.display(),
-                    "CLAUDE_PATH binary not found. Install Claude CLI or set CLAUDE_PATH in .env"
+                    path = %path.display(),
+                    "{} binary not found. Install {} CLI or set {} in .env",
+                    env_var, name, env_var
                 );
-            } else if !is_executable(claude_path) {
+            } else if !is_executable(path) {
                 error!(
-                    path = %claude_path.display(),
-                    "CLAUDE_PATH binary exists but is not executable. Run: chmod +x {}",
-                    claude_path.display()
+                    path = %path.display(),
+                    "{} binary exists but is not executable. Run: chmod +x {}",
+                    env_var, path.display()
                 );
             }
         } else {
-            match which::which(claude_path) {
+            match which::which(path) {
                 Ok(found) => {
-                    debug!(path = %found.display(), "Claude CLI binary found");
+                    debug!(path = %found.display(), "{} CLI binary found", name);
                 }
                 Err(_) => {
+                    let install_url = match name {
+                        "claude" => "https://claude.ai/download",
+                        "codex" => "https://github.com/openai/codex",
+                        _ => "the vendor's website",
+                    };
                     error!(
-                        binary = %claude_path.display(),
-                        "Claude CLI binary not found on PATH. Install it from https://claude.ai/download or set CLAUDE_PATH in .env to an absolute path"
+                        binary = %path.display(),
+                        "{} CLI binary not found on PATH. Install it from {} or set {}_PATH in .env to an absolute path",
+                        name, install_url, name.to_uppercase()
                     );
                 }
             }
@@ -198,22 +243,106 @@ impl ProcessManager {
         self.proxy_api_key.as_deref()
     }
 
+    /// Get the CLI binary path for a given backend.
+    fn get_cli_path(&self, backend: CliBackend) -> &Path {
+        match backend {
+            CliBackend::Claude => &self.claude_path,
+            CliBackend::Codex => &self.codex_path,
+        }
+    }
+
+    /// Build a command for the appropriate CLI backend.
+    fn build_cli_command(&self, backend: CliBackend, _worktree: &Path, _shared: &Path) -> Command {
+        let cli_path = self.get_cli_path(backend);
+        let mut cmd = Command::new(cli_path);
+
+        match backend {
+            CliBackend::Claude => {
+                // Claude Code CLI flags
+                cmd.arg("--print")
+                    .arg("--dangerously-skip-permissions")
+                    .arg("--output-format")
+                    .arg("stream-json");
+            }
+            CliBackend::Codex => {
+                // Codex CLI flags
+                // codex --approval-mode full-auto -q "<prompt>"
+                cmd.arg("--approval-mode").arg("full-auto").arg("-q");
+            }
+        }
+
+        cmd
+    }
+
+    /// Inject environment variables for the CLI backend.
+    fn inject_cli_env(&self, cmd: &mut Command, backend: CliBackend) {
+        match backend {
+            CliBackend::Claude => {
+                // Claude uses ANTHROPIC_API_KEY
+                if let Some(proxy_url) = &self.proxy_url {
+                    cmd.env(
+                        "ANTHROPIC_BASE_URL",
+                        proxy_url.trim_end_matches("/v1").trim_end_matches('/'),
+                    );
+                    if let Some(api_key) = &self.proxy_api_key {
+                        cmd.env("ANTHROPIC_API_KEY", api_key);
+                    }
+                } else {
+                    cmd.env(
+                        "ANTHROPIC_API_KEY",
+                        std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+                    );
+                }
+            }
+            CliBackend::Codex => {
+                // Codex uses OPENAI_API_KEY
+                if let Some(proxy_url) = &self.proxy_url {
+                    // Codex expects OpenAI-compatible endpoint
+                    cmd.env(
+                        "OPENAI_BASE_URL",
+                        proxy_url.trim_end_matches("/v1").trim_end_matches('/'),
+                    );
+                    if let Some(api_key) = &self.proxy_api_key {
+                        cmd.env("OPENAI_API_KEY", api_key);
+                    }
+                } else {
+                    cmd.env(
+                        "OPENAI_API_KEY",
+                        std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+                    );
+                }
+            }
+        }
+
+        // Common LLM environment variables
+        Self::inject_llm_env(cmd);
+    }
+
     fn plugin_dir(target: &Path) -> PathBuf {
         target.join(".claude").join("plugins").join("orchestration")
     }
 
-    /// Spawn a FORGE process (long-running).
-    pub async fn spawn_forge(
+    /// Get the Codex plugin directory (source location with .codex-plugin/plugin.json)
+    fn codex_plugin_dir() -> PathBuf {
+        // The orchestration plugin is in the AgentFlow repository root
+        // It contains .codex-plugin/plugin.json manifest for Codex
+        PathBuf::from("orchestration/plugin")
+    }
+
+    /// Spawn a FORGE process (long-running) with specified CLI backend.
+    pub async fn spawn_forge_with_backend(
         &self,
         pair_id: &str,
         ticket_id: &str,
         worktree: &Path,
         shared: &Path,
+        backend: CliBackend,
     ) -> Result<Child> {
         info!(
             pair = pair_id,
             ticket = ticket_id,
             worktree = %worktree.display(),
+            backend = ?backend,
             "Spawning FORGE process"
         );
 
@@ -222,16 +351,92 @@ impl ProcessManager {
         let settings_path = worktree.join(".claude").join("settings.json");
         let plugin_dir = Self::plugin_dir(worktree);
 
-        let mut cmd = Command::new(&self.claude_path);
-        cmd.arg("--print")
-            .arg("--dangerously-skip-permissions")
-            .arg("--settings")
-            .arg(&settings_path)
-            .arg("--plugin-dir")
-            .arg(&plugin_dir)
-            .arg("--add-dir")
-            .arg(shared)
-            .env("SPRINTLESS_PAIR_ID", pair_id)
+        let mut cmd = self.build_cli_command(backend, worktree, shared);
+
+        // Add backend-specific arguments
+        match backend {
+            CliBackend::Claude => {
+                cmd.arg("--settings")
+                    .arg(&settings_path)
+                    .arg("--plugin-dir")
+                    .arg(&plugin_dir)
+                    .arg("--add-dir")
+                    .arg(shared);
+            }
+            CliBackend::Codex => {
+                // Codex uses a marketplace file at ~/.agents/plugins/marketplace.json
+                // to list available plugins. The plugin directory should contain
+                // a .codex-plugin/plugin.json manifest.
+                // See: https://developers.openai.com/codex/plugins/build
+
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/tmp".to_string());
+
+                // Create marketplace directory
+                let agents_dir = PathBuf::from(&home).join(".agents").join("plugins");
+                if !agents_dir.exists() {
+                    std::fs::create_dir_all(&agents_dir)
+                        .context("Failed to create .agents/plugins directory")?;
+                }
+
+                let marketplace_file = agents_dir.join("marketplace.json");
+
+                // Read existing marketplace or create new one
+                let mut marketplace: serde_json::Value = if marketplace_file.exists() {
+                    let content = std::fs::read_to_string(&marketplace_file)
+                        .context("Failed to read marketplace.json")?;
+                    serde_json::from_str(&content).unwrap_or_else(|_| {
+                        serde_json::json!({
+                            "name": "local-plugins",
+                            "plugins": []
+                        })
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": "local-plugins",
+                        "interface": {
+                            "displayName": "Local Plugins"
+                        },
+                        "plugins": []
+                    })
+                };
+
+                // Add orchestration plugin entry if not already present
+                // Use the source plugin directory that contains .codex-plugin/plugin.json
+                let codex_plugin_source = Self::codex_plugin_dir();
+                let plugin_entry = serde_json::json!({
+                    "name": "orchestration",
+                    "source": {
+                        "source": "local",
+                        "path": codex_plugin_source.to_string_lossy().to_string()
+                    },
+                    "policy": {
+                        "installation": "AVAILABLE",
+                        "authentication": "ON_INSTALL"
+                    },
+                    "category": "Productivity"
+                });
+
+                if let Some(plugins) = marketplace
+                    .get_mut("plugins")
+                    .and_then(|p| p.as_array_mut())
+                {
+                    if !plugins.iter().any(|p| p["name"] == "orchestration") {
+                        plugins.push(plugin_entry);
+                    }
+                }
+
+                // Write updated marketplace.json
+                std::fs::write(
+                    &marketplace_file,
+                    serde_json::to_string_pretty(&marketplace)?,
+                )
+                .context("Failed to write marketplace.json")?;
+            }
+        }
+
+        cmd.env("SPRINTLESS_PAIR_ID", pair_id)
             .env("SPRINTLESS_TICKET_ID", ticket_id)
             .env("SPRINTLESS_SEGMENT", "")
             .env(
@@ -241,20 +446,7 @@ impl ProcessManager {
             .env("SPRINTLESS_SHARED", shared.to_string_lossy().to_string())
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
-        if let Some(proxy_url) = &self.proxy_url {
-            Self::inject_proxy_env(
-                &mut cmd,
-                "forge-key",
-                proxy_url,
-                self.proxy_api_key.as_deref(),
-            );
-        } else {
-            cmd.env(
-                "ANTHROPIC_API_KEY",
-                std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
-            );
-            Self::inject_llm_env(&mut cmd);
-        }
+        self.inject_cli_env(&mut cmd, backend);
 
         cmd.current_dir(worktree)
             .stdin(Stdio::piped())
@@ -306,6 +498,18 @@ impl ProcessManager {
 
         info!(pair = pair_id, pid = ?child.id(), "FORGE process spawned");
         Ok(child)
+    }
+
+    /// Spawn a FORGE process (long-running) using default backend.
+    pub async fn spawn_forge(
+        &self,
+        pair_id: &str,
+        ticket_id: &str,
+        worktree: &Path,
+        shared: &Path,
+    ) -> Result<Child> {
+        self.spawn_forge_with_backend(pair_id, ticket_id, worktree, shared, self.default_backend)
+            .await
     }
 
     pub async fn spawn_forge_resume(
