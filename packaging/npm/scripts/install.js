@@ -259,8 +259,8 @@ async function main() {
         });
     } catch (apiErr) {
         console.error(`[openflows] GitHub API error: ${apiErr.message}`);
-        console.error('[openflows] Falling back to latest known version: v0.1.3');
-        tag = 'v0.1.3';
+        console.error('[openflows] Falling back to latest known version: v0.1.6');
+        tag = 'v0.1.6';
     }
 
     const archiveName = `openflows-${tag}-${platform}.tar.gz`;
