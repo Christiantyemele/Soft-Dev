@@ -62,6 +62,12 @@ impl ProcessManager {
 
         let proxy_url = std::env::var("PROXY_URL").ok();
         let proxy_api_key = std::env::var("PROXY_API_KEY").ok();
+        
+        tracing::info!(
+            proxy_url = ?proxy_url,
+            proxy_api_key = ?proxy_api_key,
+            "ProcessManager::new - environment check"
+        );
 
         Self {
             claude_path,
@@ -147,11 +153,23 @@ impl ProcessManager {
         proxy_api_key: Option<&str>,
     ) {
         let base_url = proxy_url.trim_end_matches("/v1").trim_end_matches('/');
+        info!("Setting ANTHROPIC_BASE_URL={} for proxy", base_url);
         cmd.env("ANTHROPIC_BASE_URL", base_url);
-        if let Some(api_key) = proxy_api_key {
-            cmd.env("ANTHROPIC_API_KEY", api_key);
-        } else {
-            cmd.env("ANTHROPIC_API_KEY", routing_key);
+        
+        // Set API key for proxy authentication
+        let api_key_value = proxy_api_key.unwrap_or(routing_key);
+        info!("Setting ANTHROPIC_API_KEY for proxy (key length: {})", api_key_value.len());
+        cmd.env("ANTHROPIC_API_KEY", api_key_value);
+        
+        // Also set the gateway URL and key for the proxy itself
+        if let Ok(gateway_url) = std::env::var("GATEWAY_URL") {
+            cmd.env("GATEWAY_URL", gateway_url);
+        }
+        if let Ok(gateway_key) = std::env::var("GATEWAY_API_KEY") {
+            cmd.env("GATEWAY_API_KEY", gateway_key);
+        }
+        if let Ok(model_map) = std::env::var("MODEL_MAP") {
+            cmd.env("MODEL_MAP", model_map);
         }
     }
 
@@ -258,6 +276,7 @@ impl ProcessManager {
             .env("SPRINTLESS_GITHUB_TOKEN", &self.github_token);
 
         if let Some(proxy_url) = &self.proxy_url {
+            info!(proxy_url = %proxy_url, proxy_api_key = ?self.proxy_api_key, "Injecting proxy environment for FORGE");
             Self::inject_proxy_env(
                 &mut cmd,
                 "forge-key",
@@ -265,6 +284,7 @@ impl ProcessManager {
                 self.proxy_api_key.as_deref(),
             );
         } else {
+            info!("No proxy configured - using direct Anthropic API");
             cmd.env(
                 "ANTHROPIC_API_KEY",
                 std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
