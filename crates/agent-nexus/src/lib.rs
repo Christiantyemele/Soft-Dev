@@ -558,6 +558,78 @@ impl NexusNode {
         }
     }
 
+    /// Sync work assignment to GitHub by assigning the issue to the forge worker,
+    /// adding a comment indicating assignment, and optionally adding labels.
+    /// The forge worker's GitHub username is defined in forge.agent.md as `forge-bot`.
+    async fn sync_assignment_to_github(
+        &self,
+        worker_id: &str,
+        ticket_id: &str,
+        issue_url: &str,
+    ) -> Result<()> {
+        // Parse owner/repo from issue URL and extract issue number
+        // Expected format: https://github.com/{owner}/{repo}/issues/{number}
+        let url_parts: Vec<&str> = issue_url.split('/').collect();
+        if url_parts.len() < 2 {
+            anyhow::bail!("Invalid issue URL format: {}", issue_url);
+        }
+
+        // Extract owner, repo, and issue number from URL
+        let repo_idx = url_parts.iter().position(|&p| p == "github.com");
+        let (owner, repo, issue_number) = match repo_idx {
+            Some(idx) if url_parts.len() > idx + 3 => {
+                let owner = url_parts[idx + 1];
+                let repo = url_parts[idx + 2];
+                // Issue number is the last component
+                let number = url_parts
+                    .last()
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .ok_or_else(|| anyhow::anyhow!("Could not parse issue number from URL"))?;
+                (owner, repo, number)
+            }
+            _ => anyhow::bail!("Could not parse owner/repo from issue URL: {}", issue_url),
+        };
+
+        let token = match self.resolve_github_token() {
+            Ok(t) => t,
+            Err(e) => {
+                anyhow::bail!("GitHub token not configured: {}", e);
+            }
+        };
+
+        let client = github::GithubRestClient::new(&token);
+
+        // Assign to forge-bot (defined in forge.agent.md)
+        const FORGE_BOT_USERNAME: &str = "forge-bot";
+        client
+            .assign_issue(owner, repo, issue_number, FORGE_BOT_USERNAME)
+            .await?;
+
+        // Add comment indicating assignment
+        let comment_body = format!(
+            "🔧 **Assigned to {} for implementation**\n\nThis issue has been assigned to the FORGE worker ({}) for automated implementation. The agent will analyze the requirements, implement the solution, and open a PR when complete.",
+            FORGE_BOT_USERNAME, worker_id.to_uppercase()
+        );
+        client
+            .add_issue_comment(owner, repo, issue_number, &comment_body)
+            .await?;
+
+        // Add assigned/in-progress labels
+        client
+            .add_issue_labels(owner, repo, issue_number, &["assigned", "in-progress"])
+            .await?;
+
+        info!(
+            worker_id,
+            ticket_id,
+            issue_url,
+            assignee = FORGE_BOT_USERNAME,
+            "Successfully synced assignment to GitHub"
+        );
+
+        Ok(())
+    }
+
     fn ensure_ci_setup_ticket(
         &self,
         _store: &SharedStore,
@@ -1003,6 +1075,22 @@ impl Node for NexusNode {
                             .set(KEY_WORKER_SLOTS, serde_json::to_value(slots)?)
                             .await;
                         info!(worker_id, ticket_id, issue_url = ?decision.issue_url, "Nexus: Store updated with NEW worker assignment");
+                    }
+
+                    // Sync assignment to GitHub: assign issue, add comment, and label
+                    if let Some(issue_url) = &decision.issue_url {
+                        if let Err(e) = self
+                            .sync_assignment_to_github(worker_id, ticket_id, issue_url)
+                            .await
+                        {
+                            warn!(
+                                worker_id,
+                                ticket_id,
+                                issue_url,
+                                error = %e,
+                                "Failed to sync assignment to GitHub — continuing anyway"
+                            );
+                        }
                     }
                 }
             }

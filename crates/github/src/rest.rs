@@ -688,6 +688,80 @@ impl GithubRestClient {
         self.get_json(&url).await
     }
 
+    /// Assign a GitHub issue to a user.
+    /// The assignee should be a GitHub username (e.g., "forge-bot").
+    pub async fn assign_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        assignee: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            GITHUB_API_BASE, owner, repo, issue_number
+        );
+        let body = serde_json::json!({ "assignees": [assignee] });
+        let resp: serde_json::Value = self.patch_json(&url, &body).await?;
+        let assignees = resp["assignees"].as_array();
+        let assigned = assignees.map(|a| {
+            a.iter().any(|u| u["login"].as_str() == Some(assignee))
+        }).unwrap_or(false);
+        if assigned {
+            info!(issue = issue_number, assignee, "GitHub issue assigned successfully");
+            Ok(())
+        } else {
+            warn!(
+                issue = issue_number,
+                assignee,
+                response = ?resp,
+                "GitHub issue assignment may not have succeeded"
+            );
+            Ok(())
+        }
+    }
+
+    /// Add a comment to a GitHub issue.
+    pub async fn add_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        body_text: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments",
+            GITHUB_API_BASE, owner, repo, issue_number
+        );
+        let body = serde_json::json!({ "body": body_text });
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        info!(issue = issue_number, "GitHub issue comment added successfully");
+        Ok(())
+    }
+
+    /// Add labels to a GitHub issue.
+    /// Replaces any existing labels with the provided set.
+    pub async fn add_issue_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/labels",
+            GITHUB_API_BASE, owner, repo, issue_number
+        );
+        let body = serde_json::json!({ "labels": labels });
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        info!(
+            issue = issue_number,
+            labels = ?labels,
+            "GitHub issue labels added successfully"
+        );
+        Ok(())
+    }
+
     /// Close a GitHub issue by setting its state to "closed".
     pub async fn close_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<()> {
         let url = format!(
