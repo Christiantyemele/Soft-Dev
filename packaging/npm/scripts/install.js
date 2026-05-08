@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 /**
- * Post-install script: downloads the correct pre-built binary for the current platform.
+ * Post-install script for @the-agenticflow/openflows
+ * 
+ * This script:
+ * 1. Downloads the correct pre-built binary for the current platform
+ * 2. Installs mcp-proxy (required for GitHub MCP connectivity)
+ * 3. Verifies all dependencies are ready
  */
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 
 const REPO = 'The-AgenticFlow/AgentFlow';
 const BIN_DIR = path.join(__dirname, '..', 'bin');
+const POSTINSTALL_LOG = path.join(__dirname, '..', '.postinstall-done');
 
 function detectPlatform() {
     const platform = os.platform();
@@ -92,9 +98,82 @@ function extractTarGz(tarPath, destDir) {
     });
 }
 
+/**
+ * Install mcp-proxy globally - required for GitHub MCP connectivity
+ */
+async function ensureMcpProxy() {
+    console.log(`[openflows] Checking mcp-proxy installation...`);
+    
+    try {
+        // Check if mcp-proxy is already installed
+        execSync('which mcp-proxy || where mcp-proxy 2>/dev/null', { stdio: 'pipe' });
+        console.log(`[openflows] ✓ mcp-proxy already installed`);
+        return true;
+    } catch {
+        // Not installed, proceed with installation
+    }
+    
+    console.log(`[openflows] Installing mcp-proxy (required for GitHub connectivity)...`);
+    
+    try {
+        // Try to install globally
+        execSync('npm install -g mcp-proxy', { 
+            stdio: 'inherit',
+            timeout: 60000 
+        });
+        console.log(`[openflows] ✓ mcp-proxy installed successfully`);
+        return true;
+    } catch (err) {
+        console.warn(`[openflows] ⚠ Could not install mcp-proxy globally: ${err.message}`);
+        console.warn(`[openflows]   You may need to run: npm install -g mcp-proxy`);
+        console.warn(`[openflows]   Or use GITHUB_MCP_TYPE=docker in your environment`);
+        return false;
+    }
+}
+
+/**
+ * Check if essential tools are available
+ */
+function checkPrerequisites() {
+    const checks = [
+        { name: 'git', cmd: 'git --version' },
+        { name: 'node', cmd: 'node --version' },
+    ];
+    
+    console.log(`[openflows] Checking prerequisites...`);
+    
+    let allPassed = true;
+    for (const check of checks) {
+        try {
+            execSync(check.cmd, { stdio: 'pipe' });
+            console.log(`[openflows] ✓ ${check.name} available`);
+        } catch {
+            console.warn(`[openflows] ✗ ${check.name} not found - please install it`);
+            allPassed = false;
+        }
+    }
+    
+    return allPassed;
+}
+
 async function main() {
+    // Skip postinstall if already done (e.g., during npm link)
+    if (fs.existsSync(POSTINSTALL_LOG)) {
+        const age = Date.now() - fs.statSync(POSTINSTALL_LOG).mtimeMs;
+        if (age < 60000) { // Less than 1 minute old
+            console.log(`[openflows] Postinstall already completed, skipping...`);
+            return;
+        }
+    }
+
     const platform = detectPlatform();
-    console.log(`[@the-agenticflow/openflows] Downloading binary for ${platform}...`);
+    console.log(``);
+    console.log(`╔══════════════════════════════════════════════╗`);
+    console.log(`║     OpenFlows Installation                    ║`);
+    console.log(`║     Autonomous AI Development Team            ║`);
+    console.log(`╚══════════════════════════════════════════════╝`);
+    console.log(``);
+    console.log(`[openflows] Platform: ${platform}`);
 
     // Ensure bin directory exists
     if (!fs.existsSync(BIN_DIR)) {
@@ -137,8 +216,8 @@ async function main() {
             });
         });
     } catch (apiErr) {
-        console.error(`[@the-agenticflow/openflows] GitHub API error: ${apiErr.message}`);
-        console.error('[@the-agenticflow/openflows] Falling back to latest known version: v0.1.3');
+        console.error(`[openflows] GitHub API error: ${apiErr.message}`);
+        console.error('[openflows] Falling back to latest known version: v0.1.3');
         tag = 'v0.1.3';
     }
 
@@ -152,6 +231,7 @@ async function main() {
     const tmpFile = path.join(tmpDir, archiveName);
 
     try {
+        console.log(`[openflows] Downloading binary for ${platform}...`);
         await download(downloadUrl, tmpFile);
         await extractTarGz(tmpFile, BIN_DIR);
     } catch (err) {
@@ -160,7 +240,7 @@ async function main() {
             const muslArchiveName = `openflows-${tag}-x86_64-unknown-linux-musl.tar.gz`;
             const muslDownloadUrl = `https://github.com/${REPO}/releases/download/${tag}/${muslArchiveName}`;
             const muslTmpFile = path.join(tmpDir, muslArchiveName);
-            console.log(`[@the-agenticflow/openflows] Trying musl fallback...`);
+            console.log(`[openflows] Trying musl fallback...`);
             await download(muslDownloadUrl, muslTmpFile);
             await extractTarGz(muslTmpFile, BIN_DIR);
             fs.unlinkSync(muslTmpFile);
@@ -191,7 +271,38 @@ async function main() {
     } catch (cleanupErr) {
         // Ignore cleanup errors
     }
-    console.log(`[openflows] Installation complete!`);
+
+    console.log(`[openflows] ✓ Binaries installed`);
+
+    // Install mcp-proxy
+    await ensureMcpProxy();
+    
+    // Check prerequisites
+    checkPrerequisites();
+
+    // Mark postinstall as done
+    fs.writeFileSync(POSTINSTALL_LOG, new Date().toISOString());
+
+    console.log(``);
+    console.log(`╔══════════════════════════════════════════════╗`);
+    console.log(`║     Installation Complete!                    ║`);
+    console.log(`╚══════════════════════════════════════════════╝`);
+    console.log(``);
+    console.log(`  Available commands:`);
+    console.log(`    openflows           - Start orchestration`);
+    console.log(`    openflows-setup     - Guided setup wizard`);
+    console.log(`    openflows-dashboard - Live monitoring TUI`);
+    console.log(`    openflows-doctor    - Diagnostic checks`);
+    console.log(``);
+    console.log(`  Quick start:`);
+    console.log(`    1. openflows-setup     # Configure API keys`);
+    console.log(`    2. openflows           # Start the autonomous team`);
+    console.log(``);
+    console.log(`  Docs: https://openflows.dev`);
+    console.log(``);
 }
 
-main();
+main().catch(err => {
+    console.error('[openflows] Installation failed:', err.message);
+    process.exit(1);
+});

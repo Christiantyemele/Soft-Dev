@@ -1,6 +1,6 @@
 {
   "name": "@the-agenticflow/openflows",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Autonomous AI development team — turns GitHub issues into working PRs",
   "main": "index.js",
   "bin": {
@@ -21,7 +21,10 @@
     "autonomous",
     "development",
     "agents",
-    "github"
+    "github",
+    "claude",
+    "fireworks",
+    "anthropic"
   ],
   "author": "The AgenticFlow Team",
   "license": "MIT",
@@ -32,7 +35,8 @@
   "files": [
     "bin/",
     "scripts/",
-    "README.md"
+    "README.md",
+    ".env.example"
   ],
   "engines": {
     "node": ">=18.0.0"
@@ -45,6 +49,9 @@
     "x64",
     "arm64"
   ],
+  "dependencies": {
+    "mcp-proxy": "^0.0.13"
+  },
   "optionalDependencies": {
     "@openflows/linux-x64-gnu": "0.1.0",
     "@openflows/linux-x64-musl": "0.1.0",

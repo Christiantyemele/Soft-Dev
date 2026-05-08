@@ -60,6 +60,7 @@ jobs:
           --bin agentflow-setup
           --bin agentflow-dashboard
           --bin agentflow-doctor
+          --bin anthropic-proxy
 
       - name: Create tarball
         run: |
@@ -68,7 +69,7 @@ jobs:
           ARCHIVE="openflows-${VERSION}-${PLATFORM}"
           mkdir -p "dist/${ARCHIVE}"
 
-          for bin in agentflow agentflow-setup agentflow-dashboard agentflow-doctor; do
+          for bin in agentflow agentflow-setup agentflow-dashboard agentflow-doctor anthropic-proxy; do
             cp "target/${{ matrix.target }}/release/${bin}" "dist/${ARCHIVE}/"
           done
 
