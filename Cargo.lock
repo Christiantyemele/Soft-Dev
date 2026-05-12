@@ -88,17 +88,12 @@ name = "agentflow-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "config",
  "crossterm",
- "pocketflow-core",
  "ratatui 0.29.0",
  "regex",
  "reqwest",
- "serde",
  "serde_json",
- "tokio",
- "tracing",
  "tui-input",
 ]
 

@@ -126,15 +126,11 @@ async fn run_dashboard_inner(mut terminal: Terminal<CrosstermBackend<io::Stdout>
                     KeyCode::Char('l') => {
                         state.show_log = !state.show_log;
                     }
-                    KeyCode::Up => {
-                        if state.selected_row > 0 {
-                            state.selected_row -= 1;
-                        }
+                    KeyCode::Up if state.selected_row > 0 => {
+                        state.selected_row -= 1;
                     }
-                    KeyCode::Down => {
-                        if state.selected_row < state.workers.len().saturating_sub(1) {
-                            state.selected_row += 1;
-                        }
+                    KeyCode::Down if state.selected_row < state.workers.len().saturating_sub(1) => {
+                        state.selected_row += 1;
                     }
                     _ => {}
                 }

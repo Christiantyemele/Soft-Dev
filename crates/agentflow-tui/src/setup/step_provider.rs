@@ -145,34 +145,24 @@ impl ProviderStep {
                                 config.selected_provider = Some(provider.name.clone());
 
                                 match provider.name.as_str() {
-                                    "Anthropic (Claude)" => {
-                                        if config.anthropic_key.is_empty() {
-                                            config.anthropic_key =
-                                                std::env::var("ANTHROPIC_API_KEY")
-                                                    .unwrap_or_default();
-                                        }
+                                    "Anthropic (Claude)" if config.anthropic_key.is_empty() => {
+                                        config.anthropic_key =
+                                            std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
                                     }
-                                    "Google Gemini" => {
-                                        if config.gemini_key.is_none() {
-                                            config.gemini_key = Some(
-                                                std::env::var("GEMINI_API_KEY").unwrap_or_default(),
-                                            );
-                                        }
+                                    "Google Gemini" if config.gemini_key.is_none() => {
+                                        config.gemini_key = Some(
+                                            std::env::var("GEMINI_API_KEY").unwrap_or_default(),
+                                        );
                                     }
-                                    "OpenAI" => {
-                                        if config.openai_key.is_none() {
-                                            config.openai_key = Some(
-                                                std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-                                            );
-                                        }
+                                    "OpenAI" if config.openai_key.is_none() => {
+                                        config.openai_key = Some(
+                                            std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+                                        );
                                     }
-                                    "Fireworks AI" => {
-                                        if config.fireworks_key.is_none() {
-                                            config.fireworks_key = Some(
-                                                std::env::var("FIREWORKS_API_KEY")
-                                                    .unwrap_or_default(),
-                                            );
-                                        }
+                                    "Fireworks AI" if config.fireworks_key.is_none() => {
+                                        config.fireworks_key = Some(
+                                            std::env::var("FIREWORKS_API_KEY").unwrap_or_default(),
+                                        );
                                     }
                                     _ => {}
                                 }

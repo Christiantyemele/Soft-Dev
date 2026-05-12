@@ -310,15 +310,11 @@ impl AgentsStep {
                                 use crossterm::event::KeyModifiers;
 
                                 match key.code {
-                                    KeyCode::Up => {
-                                        if *selected > 0 {
-                                            *selected -= 1;
-                                        }
+                                    KeyCode::Up if *selected > 0 => {
+                                        *selected -= 1;
                                     }
-                                    KeyCode::Down => {
-                                        if *selected + 1 < agents.len() {
-                                            *selected += 1;
-                                        }
+                                    KeyCode::Down if *selected + 1 < agents.len() => {
+                                        *selected += 1;
                                     }
                                     KeyCode::Tab => {
                                         if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -332,45 +328,39 @@ impl AgentsStep {
                                         config.agents = agents.clone();
                                         return Ok(());
                                     }
-                                    KeyCode::Char(' ') => {
-                                        if *focused_field == 0 {
-                                            agents[*selected].active = !agents[*selected].active;
-                                        }
+                                    KeyCode::Char(' ') if *focused_field == 0 => {
+                                        agents[*selected].active = !agents[*selected].active;
                                     }
-                                    KeyCode::Left => {
+                                    KeyCode::Left
                                         if *focused_field == 1
                                             && agents[*selected].id != "nexus"
-                                            && agents[*selected].instances > 1
-                                        {
-                                            agents[*selected].instances -= 1;
-                                        }
+                                            && agents[*selected].instances > 1 =>
+                                    {
+                                        agents[*selected].instances -= 1;
                                     }
-                                    KeyCode::Right => {
+                                    KeyCode::Right
                                         if *focused_field == 1
                                             && agents[*selected].id != "nexus"
-                                            && agents[*selected].instances < 10
-                                        {
-                                            agents[*selected].instances += 1;
-                                        }
+                                            && agents[*selected].instances < 10 =>
+                                    {
+                                        agents[*selected].instances += 1;
                                     }
-                                    KeyCode::Enter => {
-                                        if *focused_field == 2 {
-                                            let current_model = agents[*selected]
-                                                .model_backend
-                                                .as_deref()
-                                                .unwrap_or("");
-                                            let initial_idx = available_models
-                                                .iter()
-                                                .position(|m| *m == current_model)
-                                                .unwrap_or(0);
-                                            state = AgentConfigState::ModelPicker {
-                                                agents: agents.clone(),
-                                                agent_idx: *selected,
-                                                selected: initial_idx,
-                                                available_models: available_models.clone(),
-                                            };
-                                            break;
-                                        }
+                                    KeyCode::Enter if *focused_field == 2 => {
+                                        let current_model = agents[*selected]
+                                            .model_backend
+                                            .as_deref()
+                                            .unwrap_or("");
+                                        let initial_idx = available_models
+                                            .iter()
+                                            .position(|m| *m == current_model)
+                                            .unwrap_or(0);
+                                        state = AgentConfigState::ModelPicker {
+                                            agents: agents.clone(),
+                                            agent_idx: *selected,
+                                            selected: initial_idx,
+                                            available_models: available_models.clone(),
+                                        };
+                                        break;
                                     }
                                     KeyCode::Esc => {
                                         return Err(anyhow::anyhow!("Setup cancelled"));
