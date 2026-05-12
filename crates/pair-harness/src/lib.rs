@@ -26,8 +26,8 @@ pub use process::{ProcessManager, SentinelMode};
 pub use provision::Provisioner;
 pub use reset::ResetManager;
 pub use types::{
-    ErrorHistory, ErrorHistoryEntry, FsEvent, PairConfig, PairOutcome, Ticket, VerificationResult,
-    VerificationState,
+    CliBackend, ErrorHistory, ErrorHistoryEntry, FsEvent, PairConfig, PairOutcome, Ticket,
+    VerificationResult, VerificationState,
 };
 pub use watchdog::Watchdog;
 pub use watcher::SharedDirWatcher;

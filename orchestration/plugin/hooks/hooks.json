@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "forge": {
+      "session_start": "./forge/session_start.sh",
+      "pre_bash_guard": "./forge/pre_bash_guard.sh",
+      "pre_write_check": "./forge/pre_write_check.sh",
+      "post_write_lint": "./forge/post_write_lint.sh",
+      "pre_compact_handoff": "./forge/pre_compact_handoff.sh",
+      "stop_require_artifact": "./forge/stop_require_artifact.sh"
+    },
+    "sentinel": {
+      "session_start": "./sentinel/session_start.sh",
+      "pre_bash_readonly_guard": "./sentinel/pre_bash_readonly_guard.sh",
+      "post_write_validate": "./sentinel/post_write_validate.sh",
+      "stop_require_eval": "./sentinel/stop_require_eval.sh"
+    },
+    "nexus": {
+      "session_start": "./nexus/init-session.sh",
+      "log_decision": "./nexus/log-decision.sh"
+    },
+    "vessel": {
+      "session_start": "./vessel/session-start.sh",
+      "log_merge_status": "./vessel/log-merge-status.sh"
+    },
+    "lore": {
+      "session_start": "./lore/session-start.sh"
+    }
+  }
+}
