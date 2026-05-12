@@ -357,23 +357,57 @@ impl ForgeSentinelPair {
         // Use the project_root from config (contains .git)
         let project_root = config.project_root.clone();
 
+        // Build ProcessManager with appropriate configuration
+        let process = match (&config.redis_url, &config.proxy_url, &config.model) {
+            // All three: redis + proxy + model
+            (Some(redis_url), Some(proxy_url), Some(model)) => ProcessManager::with_model(
+                &config.github_token,
+                Some(redis_url.clone()),
+                Some(proxy_url.clone()),
+                model,
+            ),
+            // Redis + proxy (no model)
+            (Some(redis_url), Some(proxy_url), None) => ProcessManager::with_proxy(
+                &config.github_token,
+                Some(redis_url.clone()),
+                proxy_url,
+            ),
+            // Redis only (no proxy, no model)
+            (Some(redis_url), None, None) => {
+                ProcessManager::with_redis(&config.github_token, redis_url)
+            }
+            // Proxy only (no redis)
+            (None, Some(proxy_url), Some(model)) => ProcessManager::with_model(
+                &config.github_token,
+                None,
+                Some(proxy_url.clone()),
+                model,
+            ),
+            (None, Some(proxy_url), None) => {
+                ProcessManager::with_proxy(&config.github_token, None, proxy_url)
+            }
+            // Model only (no redis, no proxy) - use model with direct API
+            (None, None, Some(model)) => ProcessManager::with_model(
+                &config.github_token,
+                None,
+                None,
+                model,
+            ),
+            // Nothing special - basic config
+            (None, None, None) => ProcessManager::new(&config.github_token),
+            // Redis + model (no proxy) - not a common case, use with_model
+            (Some(redis_url), None, Some(model)) => ProcessManager::with_model(
+                &config.github_token,
+                Some(redis_url.clone()),
+                None,
+                model,
+            ),
+        };
+
         Self {
             worktree: WorktreeManager::new(&project_root),
             locks: FileLockManager::new(&project_root),
-            process: match (&config.redis_url, &config.proxy_url) {
-                (Some(redis_url), Some(proxy_url)) => ProcessManager::with_proxy(
-                    &config.github_token,
-                    Some(redis_url.clone()),
-                    proxy_url,
-                ),
-                (Some(redis_url), None) => {
-                    ProcessManager::with_redis(&config.github_token, redis_url)
-                }
-                (None, Some(proxy_url)) => {
-                    ProcessManager::with_proxy(&config.github_token, None, proxy_url)
-                }
-                (None, None) => ProcessManager::new(&config.github_token),
-            },
+            process,
             reset: ResetManager::new(config.shared.clone(), config.max_resets),
             watchdog: Watchdog::new(config.shared.clone(), config.watchdog_timeout_secs),
             verification_state: VerificationState::new(config.max_verify_attempts),
@@ -943,7 +977,30 @@ impl ForgeSentinelPair {
                                 // Written segments have evals, but PLAN has more segments to implement.
                                 // This is expected with --print mode: FORGE exits after each segment,
                                 // and we just respawn to continue the next one.
-                                info!("FORGE exited after segment work - respawning to continue implementation");
+                                // However, check for API errors first — if FORGE is failing on every
+                                // respawn due to credit/model issues, we must stop rather than loop.
+                                if let Some(api_error) = self.check_forge_api_error().await {
+                                    error!(error = %api_error, "FORGE failed with API error during segment respawn - stopping pair");
+                                    self.write_error_feedback(
+                                        "api_error",
+                                        &api_error,
+                                        Some("Check your API key, credits, and model availability. Update .env with valid credentials."),
+                                    ).await?;
+                                    return Ok(PairOutcome::Blocked {
+                                        reason: format!("API error: {}", api_error),
+                                        blockers: vec![Blocker {
+                                            blocker_type: "api_error".to_string(),
+                                            description: api_error.clone(),
+                                            nexus_action: "Check API credentials and credits".to_string(),
+                                        }],
+                                    });
+                                }
+                                let new_count = self.reset.increment_reset();
+                                info!(
+                                    reset_count = new_count,
+                                    max_resets = self.config.max_resets,
+                                    "FORGE exited after segment work - respawning to continue implementation"
+                                );
                                 self.sentinel_retries.reset_all();
                                 *forge = self.spawn_forge_resume().await?;
                             } else if !self.has_meaningful_worklog().await {
@@ -1879,9 +1936,9 @@ impl ForgeSentinelPair {
         for line in lines.iter().rev().take(10) {
             let line_lower = line.to_lowercase();
             
-            // Fireworks errors
+            // Claude CLI credit/model errors (direct Anthropic API without proxy)
             if line_lower.contains("credit balance is too low") {
-                return Some("Fireworks API: Insufficient credits".to_string());
+                return Some("Claude CLI: Insufficient credits (check if proxy is configured correctly)".to_string());
             }
             if line_lower.contains("rate limit") || line_lower.contains("rate_limit") {
                 return Some("API rate limit exceeded".to_string());
@@ -1891,6 +1948,22 @@ impl ForgeSentinelPair {
             }
             if line_lower.contains("model not found") || line_lower.contains("model not available") {
                 return Some("Model not available".to_string());
+            }
+            // Claude CLI model access errors: "There's an issue with the selected model"
+            if line_lower.contains("issue with the selected model") || line_lower.contains("may not exist or you may not have access") {
+                // Extract the model name from the error for better diagnostics
+                // Pattern: "issue with the selected model (model_name)"
+                if let Some(start) = line.find("model (") {
+                    if let Some(end) = line[start..].find(")") {
+                        let model_name = &line[start + 7..start + end];
+                        // Check for ANSI escape codes in model name (indicator of terminal capture bug)
+                        if model_name.contains("\x1b") || model_name.contains("[1m") || model_name.contains("[0m") {
+                            return Some(format!("Model name contains ANSI escape codes: '{}'. This is a bug in model configuration.", model_name));
+                        }
+                        return Some(format!("Model '{}' not available or no access", model_name));
+                    }
+                }
+                return Some("Model not available or no access".to_string());
             }
             if line_lower.contains("quota exceeded") || line_lower.contains("usage limit") {
                 return Some("API quota exceeded".to_string());
@@ -1902,6 +1975,11 @@ impl ForgeSentinelPair {
             }
             if line_lower.contains("anthropic api error") {
                 return Some(format!("Anthropic API error: {}", line));
+            }
+            
+            // Fireworks-specific errors (when using proxy)
+            if line_lower.contains("fireworks") && line_lower.contains("error") {
+                return Some(format!("Fireworks API error: {}", line));
             }
         }
 
