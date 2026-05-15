@@ -1,8 +1,22 @@
-# AgentFlow - Autonomous AI Development Team
+# OpenFlows - Autonomous AI Development Team
 
 > 🌐 Official site: [openflows.dev](https://openflows.dev)
 
-An autonomous software development team composed of AI agents working in a unified Rust/Tokio flow. The team can take GitHub issues and turn them into working code with pull requests - all autonomously.
+**OpenFlows is an autonomous software development team that runs itself.**
+
+Imagine having a complete engineering team — Scrum Master, Senior Developer, Security Auditor, DevOps Engineer, and Technical Writer — that works 24/7 to turn your GitHub issues into production-ready code and pull requests. All without you writing a single line of code.
+
+## 🎯 The Big Idea: You Stay the Product Owner
+
+**Each AI agent gets their own account and identity.** They create branches, open PRs, review code, run CI/CD, and deploy — just like human developers.
+
+**You stay as the client/product owner.** NEXUS (the orchestrator) notifies you via your preferred communication channel (WhatsApp, Discord, Email, etc.) only when necessary:
+- 📋 Specification discrepancies need clarification
+- 💳 Credits/API limits are exhausted
+- 🔒 Security concerns require human approval
+- ✅ Final approval for major architectural decisions
+
+**Otherwise, the team runs autonomously.** You wake up to completed features, reviewed PRs, and updated documentation.
 
 ![AgentFlow Architecture](image.png)
 
@@ -184,6 +198,44 @@ openflows.on('exit', (code) => {
 - How the FORGE-SENTINEL pair communicates through the shared directory
 - Where to find generated plans, evaluations, and code changes on disk
 - Troubleshooting table for common failures
+
+---
+
+## ⚙️ How It Works (The Autonomous Flow)
+
+```
+GitHub Issue → NEXUS assigns → FORGE codes → SENTINEL reviews → VESSEL merges → You get notified
+```
+
+### The Lifecycle of an Issue
+
+1. **📥 Discovery** — NEXUS polls GitHub and discovers new issues
+2. **📋 Assignment** — NEXUS assigns tickets to available FORGE workers
+3. **💻 Implementation** — FORGE spawns Claude Code, writes code, opens PRs
+4. **🔍 Review** — SENTINEL reviews PRs for security, quality, and test coverage
+5. **🔄 Iteration** — If issues found, FORGE fixes them; loop continues
+6. **✅ Merge** — VESSEL merges approved PRs, handles CI/CD
+7. **📝 Documentation** — LORE writes ADRs and updates docs
+8. **📢 Notification** — NEXUS notifies you only when human input needed
+
+### Agent Accounts & Identity
+
+Each agent operates with their own identity:
+- **Separate GitHub tokens** — Each agent can have their own PAT
+- **Named branches** — `forge-1/feature-xyz`, `sentinel/review-123`
+- **Attribution in commits** — Know which agent made changes
+- **Individual worktrees** — Agents work in isolated directories
+
+### Human-in-the-Loop (Only When Needed)
+
+NEXUS reaches out to you via your configured channels when:
+- 🚨 **Security concerns** — SENTINEL flags potential vulnerabilities
+- 💳 **Resource limits** — API credits exhausted, need approval to continue
+- 📋 **Spec ambiguity** — Issue description unclear, needs clarification
+- 🏗️ **Architecture decisions** — Major design choices need product owner input
+- ❌ **CI failures** — Tests failing repeatedly, needs human debugging
+
+**Default mode:** Autonomous execution. You only hear from the team when they need you.
 
 ## The Team
 
