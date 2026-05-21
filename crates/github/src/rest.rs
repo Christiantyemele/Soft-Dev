@@ -712,6 +712,58 @@ impl GithubRestClient {
         self.get_json(&url).await
     }
 
+    /// Assign a GitHub issue to a user.
+    /// The assignee should be a GitHub username (e.g., "forge-bot").
+    /// Returns Ok(()) on success, or an error with the HTTP status code on failure.
+    pub async fn assign_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        assignee: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            GITHUB_API_BASE, owner, repo, issue_number
+        );
+        let body = serde_json::json!({ "assignees": [assignee] });
+
+        debug!(url, assignee, "GitHub API PATCH issue assignment");
+        let payload = serde_json::to_vec(&body)?;
+        let resp = self
+            .send_with_retry(|| self.build_patch(&url, &payload))
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let resp_json: serde_json::Value = resp.json().await?;
+            let assignees = resp_json["assignees"].as_array();
+            let assigned = assignees
+                .map(|a| a.iter().any(|u| u["login"].as_str() == Some(assignee)))
+                .unwrap_or(false);
+            if assigned {
+                info!(
+                    issue = issue_number,
+                    assignee, "GitHub issue assigned successfully"
+                );
+            } else {
+                warn!(
+                    issue = issue_number,
+                    assignee,
+                    "GitHub issue assignment may not have succeeded (assignee not in response)"
+                );
+            }
+            Ok(())
+        } else if status.as_u16() == 422 {
+            // 422 Unprocessable Entity - typically means invalid assignee
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Validation failed (422): {}", body_text)
+        } else {
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub API error {}: {}", status, body_text)
+        }
+    }
+
     /// Close a GitHub issue by setting its state to "closed".
     pub async fn close_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<()> {
         let url = format!(
