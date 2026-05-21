@@ -1,6 +1,6 @@
 // crates/agent-nexus/src/lib.rs
 use agent_client::{AgentDecision, AgentPersona, AgentRunner};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use config::{
     state::{KEY_COMMAND_GATE, KEY_PENDING_PRS, KEY_TICKETS, KEY_WORKER_SLOTS},
@@ -559,8 +559,7 @@ impl NexusNode {
         }
     }
 
-    /// Sync work assignment to GitHub by assigning the issue to the forge worker,
-    /// adding a comment indicating assignment, and optionally adding labels.
+    /// Sync work assignment to GitHub by assigning the issue to the forge worker.
     /// The forge worker's GitHub username is loaded from the agent definition (forge.agent.md).
     async fn sync_assignment_to_github(
         &self,
@@ -570,26 +569,45 @@ impl NexusNode {
     ) -> Result<()> {
         // Parse owner/repo from issue URL and extract issue number
         // Expected format: https://github.com/{owner}/{repo}/issues/{number}
-        let url_parts: Vec<&str> = issue_url.split('/').collect();
-        if url_parts.len() < 2 {
-            anyhow::bail!("Invalid issue URL format: {}", issue_url);
+        let parsed_url = url::Url::parse(issue_url)
+            .with_context(|| format!("Invalid issue URL format: {}", issue_url))?;
+
+        // Validate host is github.com (case-insensitive)
+        let host = parsed_url.host_str().ok_or_else(|| anyhow::anyhow!("Missing host in URL"))?;
+        if !host.eq_ignore_ascii_case("github.com") {
+            anyhow::bail!("URL host must be github.com, got: {}", host);
         }
 
-        // Extract owner, repo, and issue number from URL
-        let repo_idx = url_parts.iter().position(|&p| p == "github.com");
-        let (owner, repo, issue_number) = match repo_idx {
-            Some(idx) if url_parts.len() > idx + 3 => {
-                let owner = url_parts[idx + 1];
-                let repo = url_parts[idx + 2];
-                // Issue number is the last component
-                let number = url_parts
-                    .last()
-                    .and_then(|n| n.parse::<u64>().ok())
-                    .ok_or_else(|| anyhow::anyhow!("Could not parse issue number from URL"))?;
-                (owner, repo, number)
-            }
-            _ => anyhow::bail!("Could not parse owner/repo from issue URL: {}", issue_url),
-        };
+        // Parse path segments: /{owner}/{repo}/issues/{number}
+        let path_segments: Vec<&str> = parsed_url
+            .path_segments()
+            .map(|s| s.collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        if path_segments.len() < 4 {
+            anyhow::bail!(
+                "Invalid GitHub issue URL path. Expected: /{{owner}}/{{repo}}/issues/{{number}}, got: {}",
+                parsed_url.path()
+            );
+        }
+
+        // Check that the third segment is "issues" (or "pull" for PRs)
+        let issue_type = path_segments[2];
+        if issue_type != "issues" && issue_type != "pull" {
+            anyhow::bail!(
+                "Expected URL path segment 3 to be 'issues' or 'pull', got: {}",
+                issue_type
+            );
+        }
+
+        let owner = path_segments[0];
+        let repo = path_segments[1];
+
+        // Extract issue number, stripping any trailing slashes or query parameters
+        let number_str = path_segments[3].trim_end_matches('/');
+        let issue_number: u64 = number_str
+            .parse()
+            .with_context(|| format!("Could not parse issue number from: {}", number_str))?;
 
         let token = match self.resolve_github_token() {
             Ok(t) => t,
@@ -629,16 +647,16 @@ impl NexusNode {
         };
 
         // Only attempt assignment if a valid GitHub username is configured
-        let assignee_display = if !github_username.is_empty() {
+        let (assignee_display, assignment_success) = if !github_username.is_empty() {
             match client
                 .assign_issue(owner, repo, issue_number, &github_username)
                 .await
             {
-                Ok(_) => github_username.clone(),
+                Ok(_) => (github_username.clone(), true),
                 Err(e) => {
                     let err_str = e.to_string();
-                    // Check if it's a 422 validation error (invalid assignee)
-                    if err_str.contains("422") || err_str.contains("Validation Failed") {
+                    // Check if it's a validation error (422) for invalid assignee
+                    if err_str.starts_with("Validation failed (422)") {
                         warn!(
                             worker_id,
                             ticket_id,
@@ -648,7 +666,7 @@ impl NexusNode {
                             github_username
                         );
                         // Continue without failing - assignment is not critical
-                        github_username.clone()
+                        (github_username.clone(), false)
                     } else {
                         return Err(e);
                     }
@@ -659,16 +677,42 @@ impl NexusNode {
                 worker_id,
                 ticket_id, "No GitHub username configured for worker — skipping assignment"
             );
-            "FORGE".to_string()
+            ("<none>".to_string(), false)
         };
 
-        info!(
-            worker_id,
-            ticket_id,
-            issue_url,
-            assignee = assignee_display,
-            "Successfully synced assignment to GitHub"
-        );
+        if assignment_success {
+            #[cfg(debug_assertions)]
+            info!(
+                worker_id,
+                ticket_id,
+                issue_url,
+                assignee = assignee_display,
+                "Successfully synced assignment to GitHub"
+            );
+            #[cfg(not(debug_assertions))]
+            info!(
+                worker_id,
+                ticket_id,
+                assignee = assignee_display,
+                "Successfully synced assignment to GitHub"
+            );
+        } else {
+            #[cfg(debug_assertions)]
+            info!(
+                worker_id,
+                ticket_id,
+                issue_url,
+                attempted_assignee = assignee_display,
+                "GitHub assignment skipped (not critical)"
+            );
+            #[cfg(not(debug_assertions))]
+            info!(
+                worker_id,
+                ticket_id,
+                attempted_assignee = assignee_display,
+                "GitHub assignment skipped (not critical)"
+            );
+        }
 
         Ok(())
     }

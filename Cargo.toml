@@ -51,5 +51,8 @@ regex = "1"
 # random
 rand = "0.8"
 
+# url parsing
+url = "2"
+
 # test utils
 tempfile = "3"

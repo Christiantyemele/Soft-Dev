@@ -714,6 +714,7 @@ impl GithubRestClient {
 
     /// Assign a GitHub issue to a user.
     /// The assignee should be a GitHub username (e.g., "forge-bot").
+    /// Returns Ok(()) on success, or an error with the HTTP status code on failure.
     pub async fn assign_issue(
         &self,
         owner: &str,
@@ -726,82 +727,41 @@ impl GithubRestClient {
             GITHUB_API_BASE, owner, repo, issue_number
         );
         let body = serde_json::json!({ "assignees": [assignee] });
-        let resp: serde_json::Value = self.patch_json(&url, &body).await?;
-        let assignees = resp["assignees"].as_array();
-        let assigned = assignees
-            .map(|a| a.iter().any(|u| u["login"].as_str() == Some(assignee)))
-            .unwrap_or(false);
-        if assigned {
-            info!(
-                issue = issue_number,
-                assignee, "GitHub issue assigned successfully"
-            );
+
+        debug!(url, assignee, "GitHub API PATCH issue assignment");
+        let payload = serde_json::to_vec(&body)?;
+        let resp = self
+            .send_with_retry(|| self.build_patch(&url, &payload))
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let resp_json: serde_json::Value = resp.json().await?;
+            let assignees = resp_json["assignees"].as_array();
+            let assigned = assignees
+                .map(|a| a.iter().any(|u| u["login"].as_str() == Some(assignee)))
+                .unwrap_or(false);
+            if assigned {
+                info!(
+                    issue = issue_number,
+                    assignee, "GitHub issue assigned successfully"
+                );
+            } else {
+                warn!(
+                    issue = issue_number,
+                    assignee,
+                    "GitHub issue assignment may not have succeeded (assignee not in response)"
+                );
+            }
             Ok(())
+        } else if status.as_u16() == 422 {
+            // 422 Unprocessable Entity - typically means invalid assignee
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Validation failed (422): {}", body_text)
         } else {
-            warn!(
-                issue = issue_number,
-                assignee,
-                response = ?resp,
-                "GitHub issue assignment may not have succeeded"
-            );
-            Ok(())
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GitHub API error {}: {}", status, body_text)
         }
-    }
-
-    /// Get the authenticated user's username from the GitHub API.
-    /// Uses the /user endpoint to fetch the login name of the token owner.
-    pub async fn get_authenticated_user(&self) -> Result<String> {
-        let url = format!("{}/user", GITHUB_API_BASE);
-        let resp: serde_json::Value = self.get_json(&url).await?;
-        let username = resp["login"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse 'login' from GitHub user response"))?;
-        info!(username, "Fetched authenticated GitHub user");
-        Ok(username.to_string())
-    }
-
-    /// Add a comment to a GitHub issue.
-    pub async fn add_issue_comment(
-        &self,
-        owner: &str,
-        repo: &str,
-        issue_number: u64,
-        body_text: &str,
-    ) -> Result<()> {
-        let url = format!(
-            "{}/repos/{}/{}/issues/{}/comments",
-            GITHUB_API_BASE, owner, repo, issue_number
-        );
-        let body = serde_json::json!({ "body": body_text });
-        let _: serde_json::Value = self.post_json(&url, &body).await?;
-        info!(
-            issue = issue_number,
-            "GitHub issue comment added successfully"
-        );
-        Ok(())
-    }
-
-    /// Add labels to a GitHub issue.
-    /// Replaces any existing labels with the provided set.
-    pub async fn add_issue_labels(
-        &self,
-        owner: &str,
-        repo: &str,
-        issue_number: u64,
-        labels: &[&str],
-    ) -> Result<()> {
-        let url = format!(
-            "{}/repos/{}/{}/issues/{}/labels",
-            GITHUB_API_BASE, owner, repo, issue_number
-        );
-        let body = serde_json::json!({ "labels": labels });
-        let _: serde_json::Value = self.post_json(&url, &body).await?;
-        info!(
-            issue = issue_number,
-            labels = ?labels,
-            "GitHub issue labels added successfully"
-        );
-        Ok(())
     }
 
     /// Close a GitHub issue by setting its state to "closed".

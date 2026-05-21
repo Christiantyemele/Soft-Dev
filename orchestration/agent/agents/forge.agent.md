@@ -3,7 +3,7 @@ id: forge
 role: builder
 cli: claude
 active: true
-github: Forge-AgentFlow
+github: forge-openflows
 slack: "@forge"
 ---
 
